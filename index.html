@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>贪吃蛇 - 单文件实现</title>
+  <style>
+    :root { --size: 400px; --cell: 20px; --bg: #111; --fg: #eee; --food:#e74c3c; --snake:#2ecc71; --grid:#1e1e1e; }
+    body { margin: 0; background: #0b0b0b; color: var(--fg); font: 14px/1.4 -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "PingFang SC", sans-serif; display: grid; place-items: center; height: 100vh; }
+    .wrap { display: grid; gap: 10px; }
+    .top { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+    .left { display: flex; gap: 10px; align-items: center; }
+    .btn { background:#222; color:#fff; border:1px solid #333; padding:6px 10px; border-radius:6px; cursor:pointer; }
+    .btn:active { transform: translateY(1px); }
+    .stat { opacity:.9; }
+    canvas { width: var(--size); height: var(--size); background: var(--bg); border: 1px solid #333; image-rendering: pixelated; }
+    .hint { opacity:.7; font-size: 12px; }
+    .overlay { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+    .card { background: rgba(0,0,0,.5); padding: 12px 14px; border: 1px solid #444; border-radius: 8px; }
+  </style>
+  <!--
+    贪吃蛇（C4T 最小实现）
+    用法：
+      - 点击“开始/暂停”或按空格开始/暂停；“重开”或按 R 重置
+      - 方向键移动；禁止立即 180° 反向；按键队列长度 ≤ 2
+      - 规则：吃到食物变长；撞墙/撞到自身 Game Over；20×20 网格，画布 400×400
+      - 速度：每吃 5 个加速 10%，上限 20 次/秒；固定 Tick 驱动
+    依赖：纯 HTML/CSS/JS，无外部库，可直接本地打开
+  -->
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="left">
+        <button class="btn" id="toggle">开始</button>
+        <button class="btn" id="reset">重开</button>
+        <span class="stat" id="score">分数: 0</span>
+      </div>
+      <div class="hint">空格：开始/暂停 · R：重开 · 方向键移动</div>
+    </div>
+    <div style="position:relative">
+      <canvas id="c" width="400" height="400" aria-label="贪吃蛇画布" tabindex="0"></canvas>
+      <div class="overlay" id="overlay" hidden>
+        <div class="card" id="overlayText">按 空格 开始</div>
+      </div>
+    </div>
+  </div>
+  <script>
+  // 核心参数（与 Run_prompt.md 对齐）
+  const SIZE = 20;         // 网格 20×20
+  const CELL = 20;         // 每格 20px => 400×400 画布
+  const INIT_LEN = 3;      // 初始长度 3
+  const BASE_TPS = 10;     // 基础 Tick 10 Hz
+  const MAX_TPS = 20;      // 上限 20 Hz
+
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const scoreEl = document.getElementById('score');
+  const toggleBtn = document.getElementById('toggle');
+  const resetBtn = document.getElementById('reset');
+  const overlay = document.getElementById('overlay');
+  const overlayText = document.getElementById('overlayText');
+
+  let state;              // 'ready' | 'running' | 'paused' | 'gameover'
+  let snake, dir, nextDirQueue, food, score, eaten, tps;
+
+  function newGame() {
+    snake = [];
+    for (let i = INIT_LEN - 1; i >= 0; i--) snake.push({ x: 5 + i, y: 10 });
+    dir = { x: -1, y: 0 };           // 初始向左
+    nextDirQueue = [];               // 按键缓冲 ≤ 2
+    food = spawnFood();
+    score = 0; eaten = 0; tps = BASE_TPS;
+    state = 'ready';
+    updateScore();
+    setOverlay('按 空格 开始');
+  }
+
+  function setOverlay(text, show = true) {
+    overlayText.textContent = text;
+    overlay.hidden = !show;
+  }
+
+  function updateScore() { scoreEl.textContent = `分数: ${score}`; }
+
+  function spawnFood() {
+    const occupied = new Set(snake.map(p => p.x + "," + p.y));
+    let x, y;
+    do { x = (Math.random() * SIZE) | 0; y = (Math.random() * SIZE) | 0; }
+    while (occupied.has(x + "," + y));
+    return { x, y };
+  }
+
+  function enqueueDir(nx, ny) {
+    if (nextDirQueue.length >= 2) return; // 缓冲上限 ≤ 2
+    const last = nextDirQueue.length ? nextDirQueue[nextDirQueue.length - 1] : dir;
+    if (last.x + nx === 0 && last.y + ny === 0) return; // 禁止 180°
+    nextDirQueue.push({ x: nx, y: ny });
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); toggle(); return; }
+    if (e.key === 'r' || e.key === 'R') { reset(); return; }
+    if (state === 'ready') return; // 未开始不接受方向，避免提前排队
+    if (e.key === 'ArrowUp') enqueueDir(0, -1);
+    else if (e.key === 'ArrowDown') enqueueDir(0, 1);
+    else if (e.key === 'ArrowLeft') enqueueDir(-1, 0);
+    else if (e.key === 'ArrowRight') enqueueDir(1, 0);
+  });
+
+  toggleBtn.onclick = toggle;
+  resetBtn.onclick = reset;
+
+  function toggle() {
+    if (state === 'running') { state = 'paused'; setOverlay('已暂停 · 空格继续'); toggleBtn.textContent = '继续'; return; }
+    if (state === 'paused') { state = 'running'; setOverlay('', false); toggleBtn.textContent = '暂停'; return; }
+    if (state === 'ready') { state = 'running'; setOverlay('', false); toggleBtn.textContent = '暂停'; return; }
+    if (state === 'gameover') { reset(); state = 'running'; setOverlay('', false); toggleBtn.textContent = '暂停'; return; }
+  }
+
+  function reset() { newGame(); toggleBtn.textContent = '开始'; }
+
+  function tick() {
+    if (state !== 'running') return;
+    if (nextDirQueue.length) dir = nextDirQueue.shift();
+    const head = snake[0];
+    const nx = head.x + dir.x, ny = head.y + dir.y;
+    // 撞墙
+    if (nx < 0 || nx >= SIZE || ny < 0 || ny >= SIZE) { gameOver(); return; }
+    // 撞自己
+    for (let i = 0; i < snake.length; i++) if (snake[i].x === nx && snake[i].y === ny) { gameOver(); return; }
+
+    // 前进
+    snake.unshift({ x: nx, y: ny });
+    if (nx === food.x && ny === food.y) {
+      score += 1; eaten += 1; updateScore();
+      if (eaten % 5 === 0) tps = Math.min(MAX_TPS, +(tps * 1.1).toFixed(2));
+      food = spawnFood();
+    } else {
+      snake.pop();
+    }
+  }
+
+  function gameOver() {
+    state = 'gameover'; setOverlay(`游戏结束 · 分数 ${score} · R 重开`); toggleBtn.textContent = '开始';
+  }
+
+  function draw() {
+    // 背景 + 轻网格
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--bg');
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--grid');
+    ctx.lineWidth = 1;
+    for (let i = 1; i < SIZE; i++) {
+      const p = i * CELL + 0.5; // 半像素线更清晰
+      ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, canvas.height); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(canvas.width, p); ctx.stroke();
+    }
+    // 食物
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--food');
+    ctx.fillRect(food.x * CELL, food.y * CELL, CELL, CELL);
+    // 蛇
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--snake');
+    for (let i = 0; i < snake.length; i++) {
+      const s = snake[i];
+      ctx.fillRect(s.x * CELL, s.y * CELL, CELL, CELL);
+    }
+  }
+
+  // 固定 Tick 循环（>=10Hz，随 tps 增加至最多 20Hz）
+  let last = performance.now();
+  function loop(now) {
+    const dt = now - last; last = now;
+    // 根据当前 tps 决定是否前进一步
+    // 使用累积器可能更精准，但为控制行数保持简单且稳定
+    const step = 1000 / tps;
+    loop.acc = (loop.acc || 0) + dt;
+    while (loop.acc >= step) { tick(); loop.acc -= step; }
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  newGame();
+  canvas.focus();
+  requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
+
