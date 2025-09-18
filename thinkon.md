@@ -1,225 +1,285 @@
-# 分形思元（Fractal Thinkon）文档
-
-## 1. 引言（Introduction）
-
-分形思元（Fractal Thinkon）是一个递归式、层级化的认知框架，用于描述和实现 **目标驱动的分裂式思考与逐层评价机制**。其核心思想是：
-
-* **下级负责生成**（思考与产出候选结果）；
-* **上级负责评价**（对下级的结果进行检验、整合与抉择）；
-* **刺激递归传递**（目标与已完成的步骤共同构成背景，驱动下一步）。
-
-分形思元强调“父即子之背”（Parent-as-Child-Back）：任何子级的背景信息，必然包含其父级目标及父级已完成的步骤。
+# 分形思考（Fractal Thinkon）正式规范 · 极简递归版
 
 ---
 
-## 2. 基本定义（Core Definitions）
+## 0. 宗旨
 
-### 2.1 刺激（Stimulus）
-一个刺激帧 $S_n^{(i)}$ 定义为：
+以最小结构刻画“计划—执行—评估—收束”的递归工作流。核心约束：
 
-$$
-S_n^{(i)} = \{ \text{"target"}: g_n^{(i)},\ \text{"background"}: B_n^{(i)} \}
-$$
+* **Think** 只返回两类之一：
 
-背景 $B_n^{(i)}$ 定义为：
+  1. **Return\_up(Rₙ)**：本层执行结果，包括思考的结果、tool的调用及其结果、完成的代码等等；
+  2. **Plan\_ready(Tₙ)**：纯自然语言的表述，以便有更好的扩展性，例如“根据搜索结果决定下一步动作”。
+* **Eval** $R_{n+1}$ 则根据 `todo`/`done` , 只输出两类之一：
 
-$$
-B_n^{(i)} = \text{null}\ \ \text{or}\ \ \{ \text{"up"}: S_{n-1},\ \text{"done"}:d_n^{(i-1)} \}
-$$
+  1. **$Call(S_{n+1})$**：启动一个**子目标（sub-goal）**；（$R_{n+1} = Null$ 是第一个子目标）
+  2. **Return\_up(Rₙ)**：认定本层完成并上返。
+* **强不变式**：任何子层 `Return_up(Rₙ₊₁)` 后，**父层必须把 `Rₙ₊₁` 追加到 `done`**，再做裁决。
 
-其中（可扩展）：
-* $B_n^{(i)}$ 为null，表示为顶节点
-* $S_{n-1}$ 是上一级的刺激
-* $n$ 是当前递归的层级
-* $g_n^{(i)}$：执行本级的第 $i$ 个目标
-* $d_n^{(i-1)}$：本级已完成步骤的情况说明
+---
 
-
-### 2.2 思考（Thinking）
-
-下级思元在刺激 $S_n$ 和记忆 $M$ 下执行，并有两类返回形式：
+## 1. 数据结构（唯一）
 
 $$
-Think = \text{LLM}(Prompt_t, S_n, M) \to (o_n, M')
+S=\{\ \textbf{goal}:g,\ \textbf{parent}:S_p\ \text{或}\ null,\ \textbf{todo}:T,\ \textbf{done}:D\ \}
 $$
 
-其中 $o_n \in \{\,\text{Return}(r_n),\ \text{Split}(G_n)\,\}$。
+* **goal**：当前层目的。
+* **parent**：父刺激（根为 null）。
+* **todo**：**纯自然语言**计划文本（通常写成带编号的条目 t1/t2/…，但内容可“活性”——允许描述“先做搜索→再修订计划”等）。
+* **done**：完成历史（列表）$R_{n+1}^{1..k}$，每个条目直接存储子层返回的结果字符串。
 
-含义：
+> 约束：`todo` 的**内容**总由 **Think** 产生（本层或经“计划优化”子任务返回的文本），**Eval 只采用,不修改**。
 
-- Return($r_n$)：给出本层的思考结果 $r_n$。
-- Split($G_n$)：给出一组派生任务集 $G_n$，用于展开子层。
-- $P_{\text{think}}$：思考提示词；
-- $M'$：需要记住的内容；
+---
 
-### 2.3 评价（Evaluation）
+## 2. 两个算子（LLM 函数）
 
-评价仅在思考返回 Return 时进行，用于决定本层控制流：
-
-$$
-Eval = \text{LLM}(Prompt_e, S_{n}^{(i)} ,\ r_n^{(i)},d_n^{(i-1)} ,G_n,\ M\,) \to (a_n, d_n^{(i)}, g_n^{(i)'}, M')
-$$
-
-其中：
-
-- $a_n \in \{\text{Think}, \text{Return}(r_n)\}$
-  - Think：生成了一个新的刺激，例如：重做、或者下一步
-  - Next: 接受前面思考的结果，进行下一个思考
-  - Return：将本级的思考完成，将结果返回给上级
-- $d_n^{(i)}$：完成$i$步后，对结果的情况说明
-- $M'$：需要记住的内容；
-
-### 2.4 Split 的派生
-
-当思考返回 Split 时，父层获得一组需并行/序贯推进的子目标集合（计划），记为派生任务集：
+### 2.1 Think
 
 $$
-G_n = \{\, g_n^{(1)},\, g_n^{(2)},\, \dots,\, g_n^{(k)} \,\},\quad k\ge 1
+\mathrm{Think}_{LLM}(Prompt_t,S_n,M,\mathsf{Tools})
+\ \Rightarrow\
+\textbf{Return\_up}(R_n)\ \big|\ \textbf{Plan\_ready}(T_n)
 $$
 
-父层据此为每个子目标构造对应的子刺激帧：
-
-$$
-S_{n+1}^{(j)} = \Big\{\
-  \text{"target"}:\, g^{(j)},\
-  \ \text{"background"}:\, \{\text{"up"}: S_n,\ \text{"done"}: d_n^{(j)}\}\
-\Big\},\quad j\in\{1,\dots,k\}
-$$
-
-其中：
-
-- "target": 本子任务的具体目标 $g^{(j)}$。
-- "path": 目标路径，定义为 $\operatorname{path}(S_0)=\{g_0\}$，且 $\operatorname{path}(S_{t+1})=\operatorname{path}(S_t)\cup\{g_{t+1}\}$；用于追踪从根到当前子任务的目标累积。若需要保持次序，可将并集视作“追加”。
-- "plan": 本轮 Split 的整体计划 $T_n$（对所有 $j$ 恒等），便于子任务“知晓兄弟节点的全貌”。
-- "background": 沿袭父即子之背原则，携带父层刺激 $S_n$ 与已完成摘要 $D_n$。
-
-不变式（对所有 $j$）：
-
-- $S_{n+1}^{(j)}.\text{background.up} = S_n$
-- $S_{n+1}^{(j)}.\text{plan} = T_n$
-- $\operatorname{path}(S_{n+1}^{(j)}) \supset \operatorname{path}(S_n)$ 且仅追加 $g^{(j)}$
-
-示例（JSON 结构）：
-
+**输出格式（JSON Dict）**：
 ```json
-// 思考在 S_n 上返回 Split，给出 3 个子目标
-Tasks_n /* 对应 T_n */ = ["收集需求", "列出模块", "制定里程碑"]
-
-S_{n+1}^{(2)} = {
-  "target": "列出模块",
-  "path": ["写项目计划", "列出模块"],
-  "plan": ["收集需求", "列出模块", "制定里程碑"],
-  "background": { "up": S_n, "done": D_n }
+{
+    "type": "RETURN" | "TODO",
+    "description": "由prompt决定的自然语言内容"
 }
 ```
 
-执行策略由父层决定（并行/串行/带依赖顺序）。父层在各子任务完成后汇总其评价摘要进入新的 $D_{n+1}$，并据此继续派生或收敛。
+* **type="TODO"**（对应Plan\_ready）：把description中的**自然语言计划**写入 `S_n.todo`（可含判定标准/依赖/"先做A后改计划"）。
+* **type="RETURN"**（对应Return\_up）：直接给出本层结果，description为执行结果。
+* 说明：
+  * 工具的调用仅在 Think 中实现，包括但不限于 MCP、CLI 等。
+  * Think 在每个新节点 $S_n$ 创建时被激活，作为该层的第一个操作。
 
-### 2.5 刺激递归更新
+### 2.2 Eval
 
-若上级决定继续：
-
+**状态更新机制**：
 $$
-S_{n+1} = \{ \text{"target"}: g_{n+1},\ \text{"background"}:\{\text{"up"}:S_n,\ \text{"done"}:D_n\}\}
-$$
-
----
-
-## 3. 工作流程（Workflow）
-
-1. **接受刺激**：思元接收目标与背景。
-2. **思考执行**：
-   - 若返回 `Split(T_n)` → 为每个 $g^{(j)}\in T_n$ 构造子刺激 $S_{n+1}^{(j)}$ 并展开子层。
-   - 若返回 `Return(r)` → 进入上级评价。
-3. **上级评价（仅针对 Return）**：
-   - 产生动作 $a\in\{\text{Redo},\ \text{Next},\ \text{Return\_up}\}$，并写入 `done` 摘要。
-   - `Redo`：要求子层重做（可调整提示/约束后再次创建子刺激）。
-   - `Next`：进入 Todo 中的下一个子任务。
-   - `Return_up`：结束本层，将结果与 `done` 交回上层。
-4. **收敛与继续**：依据 `done` 的累计与控制流动作，继续派生或上行收敛。
-5. **终止条件**：当父层判断目标已充分完成，停止派生并上行。
-
----
-
-## 4. 核心原则（Principles）
-
-1. **生成-评价分离**：下级只负责生成，不自我评价。
-2. **父即子之背**：父层的目标与已完成步骤构成子层的背景。
-3. **递归可追溯性**：任意 $S_n$ 可通过 `background.up` 追溯至根刺激 $S_0$。
-4. **结果-上下文统一**：刺激既包含目的（target），又包含历史痕迹（done）。
-
----
-
-## 5. 形式化循环（Formal Loop）
-
-单步过程拆分为思考输出与（可选的）评价决策：
-
-$$
-o_n, M_n' = Think(S_n, M_n),\quad o_n\in\{\text{Return}(r_n),\ \text{Split}(T_n)\}
+S_n.done\ \  += x,
+\quad x\in\{\varnothing,\ R_{n+1}\}
 $$
 
-- 若 $o_n=\text{Split}(T_n)$：派生 $\{S_{n+1}^{(j)}\}$ 并递归执行。
-- 若 $o_n=\text{Return}(r_n)$：
+注：当 $x=\varnothing$ 时，模拟一个空的返回事件，此时 $S_n.done$ 保持不变；当 $x=R_{n+1}$ 时，执行 $S_n.done.append(R_{n+1})$。
 
+**Eval算子定义**：
 $$
-a_n, \eta_n, M_p' = Eval(\text{Return}(r_n), M_p),\quad a_n\in\{\text{Redo},\ \text{Next},\ \text{Return\_up}\}
+\mathrm{Eval}_{LLM}(Prompt_e,S_n,M)
+\ \Rightarrow\
+\textbf{Call}(S_{n+1})\ \big|\ \textbf{Return\_up}(R_n)
 $$
 
-据 $a_n$ 控制流进行 Redo/Next/Return\_up 处理并继续递归。
-
----
-
-## 6. 示例（Example）
-
-### 初始刺激
-
+**输出格式（JSON Dict）**：
 ```json
-S0 = {
-  "target": "写一篇关于 AI 与艺术的短文",
-  "background": null
+{
+    "type": "RETURN" | "CALL",
+    "description": "文字描述"
 }
 ```
 
-### 完成“生成艺术/DALL·E”后
+* **type="CALL"**（对应Call）：description包含子目标描述，用于创建 `S_{n+1}`。
+* **type="RETURN"**（对应Return\_up）：description为本层完成结果。
 
-```json
-S1 = {
-  "target": "辅助创作",
-  "background": {
-    "up": S0,
-    "done": ["生成艺术部分已完成，包含 DALL·E 例子"]
-  }
-}
+**工作机制**：Eval_LLM通过访问 `S_n.todo` 和 `S_n.done` 的内部状态来感知当前阶段，x值通过更新S_n.done变相传递给Eval_LLM。
+
+* **首启阶段 `x=∅`**：首个子目标由用户初始输入的goal分解而来，S_n.done保持当前状态，Eval依据 `S_n.todo/S_n.done` 决定 **Call(S_{n+1})** 或直接 **Return\_up**。
+* **续步阶段 `x=R_{n+1}`**：后续子目标都是从todo中拆分出来的，**先**把 `R_{n+1}` 追加到 `S_n.done`，然后Eval依据更新后的状态决定 **Call(S_{n+1})** 或 **Return\_up**。
+* **一句话**：依据 `todo/done` 决定**Call 下一项/重做/修复**（都属于 **Call**）或 **Return\_up**
+  
+> **Redo/反思失败/next**：都统一表现为再次 **Call** 。
+
+---
+
+## 3. 递归控制流（单链，无并发）
+
+记 `Solve(Sₙ)` 为求解流程。
+
+**(1) Think\@n：计划或直接返回**
+
+* `Return_up(Rₙ)` → 本层出栈；
+* `Plan_ready(Tₙ)` → `Sₙ.todo ← Tₙ`，转 (2)。
+
+**(2) Eval\@n：首启阶段（x=∅）**
+
+Eval_LLM(Prompt_e,S_n,M) 基于当前 S_n.todo/S_n.done 状态：
+* **Call(S_{n+1})**：生成并调用一个子节点；或
+* **Return\_up(Rₙ)**：认为已完成。
+
+**(3) Solve@子层**
+
+* 递归运行，直到子层 **Return\_up(Rₙ₊₁)** 上返。
+
+**(4) Eval\@n：续步阶段（x=Rₙ₊₁）**
+
+* 先执行状态更新：`S_n.done += Rₙ₊₁`；
+* 然后 Eval_LLM(Prompt_e,S_n,M) 基于更新后的状态决定：
+  * **Call(S_{n+1})**：生成并调用下一个子节点；或
+  * **Return\_up(Rₙ)**：收束本层。
+
+---
+
+## 4. 操作语义（推导式）
+
+**Think 返回结果**
+
+$$
+\frac{\mathrm{Think}(S_n)=\textbf{Return\_up}(R_n)}{\uparrow R_n}
+$$
+
+**Think 返回计划（自然语言）**
+
+$$
+\frac{\mathrm{Think}(S_n)=\textbf{Plan\_ready}(T_n)}{S_n.\text{todo}\gets T_n}
+$$
+
+**Eval 首启阶段（无前置返回结果）**
+
+$$
+\frac{x=\varnothing}
+{\mathrm{Eval}_{LLM}(Prompt_e,S_n,M)=\textbf{Call}(S_{n+1})\ \ \text{or}\ \ \textbf{Return\_up}(R_n)}
+$$
+
+**子层返回→先入档再裁决（续步阶段）**
+
+$$
+\frac{\mathrm{Solve}(S_{n+1})\leadsto \textbf{Return\_up}(R_{n+1})}
+{S_n.done{+}{=}R_{n+1};\ \ \ \mathrm{Eval}_{LLM}(Prompt_e,S_n,M):
+\ \textbf{Call}(S_{n+1})\ \text{or}\ \textbf{Return\_up}(R_n)}
+$$
+
+---
+
+## 5. 失败与重做（只有 Call/Return 两态）
+
+* **失败检测**：子层可在结果文本中明确表示失败及其原因。
+* **重做机制**：
+  - **直接重做**：Eval 基于done中的失败结果，重新生成相同类型的子任务
+  - **修复重做**：先 Call 一个"补前置条件"的修复子任务，再 Call 原任务
+
+* **入档原则**：每一次子层返回（成功或失败）均**必须**入 `done`，直接添加返回的结果字符串。
+
+## 6. 错误处理与终止条件
+
+* **LLM 响应错误**：当 Think_LLM 或 Eval_LLM 返回无效格式时，抛出格式错误并终止当前分支。
+* **资源限制**：
+  - **递归深度限制**：当递归层数超过预设阈值时，强制返回当前状态。
+  - **Token 消耗限制**：当 Token 使用量超过预算时，触发提前终止机制。
+  - **时间限制**：设置单个 Solve 调用的最大执行时间。
+* **死循环检测**：当连续多次 Call 同一子目标且无进展时，触发循环检测机制。
+* **优雅降级**：出现不可恢复错误时，返回已完成的部分结果，而非完全失败。
+
+---
+
+## 7. 示例（含活性计划、失败与重做）
+
+#### Step1  S₀（根）
+
+```
+goal  : 写一篇“AI 与艺术”的短文（800–1200字）
+parent: null
+todo  : （空）
+done  : []
 ```
 
-### 完成“辅助创作”后，派生“艺术评论”
+#### Step2 **$Think(S_n) → Plan\_ready(T_0)  → S_n.todo = T_0$**（纯自然语言）
 
-```json
-S2 = {
-  "target": "艺术评论",
-  "background": {
-    "up": S0,
-    "done": [
-      "生成艺术部分已完成，包含 DALL·E 例子",
-      "辅助创作部分已完成，并强调人机协作"
-    ]
-  }
-}
+```
+分成三个段落撰写：
+ [] 生成艺术段落
+ [] 辅助创作段落
+ [] 艺术评论段落
+```
+
+#### Step3 **首启阶段：$Eval_{LLM}(Prompt_e,S_0,M) → Call(S_1^{(0)})$**
+**当前状态**：$S_0.done=[]$（无前置返回结果，x=∅）
+
+**由 Eval 创建的子节点 $S_1^{(0)}$**
+```
+goal  : 生成艺术段落：含 DALL·E 例，要求不少于100，且能引起兴趣；
+parent: S₀
+todo  : （空）
+done  : []
+```
+#### Step4 **递归调用 Solve($S_1^{(0)}$) 返回的 $R_1^{(0)}$**
+
+``` 
+生成艺术段落已经写完，含 DALL·E 例，并符合要求。
+```
+#### Step5 **续步阶段：处理第一个子任务返回结果**
+**状态更新**：$S_0.done += R_1^{(0)}$（强不变式：先入档，x=$R_1^{(0)}$）
+
+**$Eval_{LLM}(Prompt_e,S_0,M) → Call(S_1^{(1)})$**
+**当前状态**：$S_0.done=[R_1^{(0)}]$（已包含前一个子任务结果）
+
+**由 Eval 创建的子节点 $S_1^{(1)}$**
+```
+goal  : 辅助创作段落：写一个能打动人的事例；
+parent: S₀
+todo  : （空）
+done  : []
+```
+
+后续步骤略...
+
+---
+
+## 8. 伪代码（顺序单链）
+
+```pseudo
+function Solve(S_n):
+  think_result = Think_LLM(P_t, S_n, M, Tools)  # 返回JSON dict
+  
+  if think_result.type == "RETURN":
+    return think_result.description              # 直接返回结果
+  elif think_result.type == "TODO":
+    S_n.todo = think_result.description          # 写入计划
+
+  # 首启阶段：x=∅，S_n.done保持当前状态
+  while true:
+    # Eval通过访问S_n.todo/S_n.done感知当前阶段
+    eval_result = Eval_LLM(P_e, S_n, M)         # 返回JSON dict
+    
+    if eval_result.type == "RETURN":
+      return eval_result.description             # 本层完成
+    elif eval_result.type == "CALL":
+      # 创建子节点
+      S_child = create_child_node()
+      S_child.parent = S_n
+      S_child.goal = eval_result.description     # 子目标来自description
+      S_child.todo = ""
+      S_child.done = []
+      
+      R_child = Solve(S_child)                  # 递归调用
+
+      # 强不变式：先入档再裁决（续步阶段：x=R_child）
+      S_n.done.append(R_child) # 状态更新，下次Eval调用将感知到新状态
+
+function create_child_node():
+  return new S()  # 创建空的S结构体
 ```
 
 ---
 
-## 7. 总结（Conclusion）
+## 9. 术语表
 
-分形思元是一个 **递归目标-背景模型**，其关键特征是：
-
-* **思考与评价分工明确**
-* **刺激递归承载目标与完成痕迹**
-* **父层目标天然成为子层背景**
-* **结果通过 done 机制累积**
-
-这保证了思考过程既能保持分形展开的开放性，又能通过上级评价实现收敛与控制。
+* **Call**：由父层 Eval 启动子层；用于"下一项/重做/修复/计划优化"。
+* **Return\_up**：层结果上返；触发处立刻出栈，可携带状态标记。
+* **Plan\_ready**：Think 返回的计划状态，将自然语言计划写入当前节点的 todo。
+* **sub-goal**：被 Eval 从 `todo` 中选定并 Call 的下一层目标（语义关系）。
+* **redo**：失败/不足时的再次 Call（同一条或修复后重做），无单独算子。
+* **强不变式**：子层返回后，父层必须先将结果入档到 done，再进行下一步决策。
+* **活性计划**：允许在 todo 中描述动态的、依赖执行结果的计划安排。
+* **JSON格式**：Think和Eval的标准输出格式，包含type和description两个字段，保证LLM输出的最大自由度。
 
 ---
 
-要不要我帮你把这份文档整理成 **学术论文的 LaTeX 模板**（含公式、定义、示例），可以直接作为正式发表的初稿？
+### 一句话总结
+
+**Think 只"给结果或给计划（自然语言）"；Eval 统一在 `S_n.todo` 和 `S_n.done` 的上下文中做两选一：要么 Call 下一步（含重做/修复/计划优化），要么认定完成并 Return\_up。**
+
+每一次子层返回都必须先入档到 `done`（强不变式），形成完整的、可回放、可审计的分形递归执行链。JSON格式的description字段由prompt决定，保证LLM的最大自由度。框架内置错误处理、资源限制和死循环检测机制，确保在复杂任务中的稳定性和可控性。
