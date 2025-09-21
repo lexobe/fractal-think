@@ -1,5 +1,5 @@
 """
-同步层适配器 - 维护向后兼容性
+同步适配器 - 向后兼容支持
 
 提供与原有同步API完全兼容的接口，内部使用异步引擎：
 - solve() 函数兼容性
@@ -13,17 +13,10 @@ import threading
 from typing import Optional, Any, Union, List
 import logging
 
-from .engine import AsyncExecutionEngine, AsyncExecutionContext, solve_async
-from .interfaces import create_async_think, create_async_eval
+from .engine import solve_async
+from .interfaces import create_async_think, create_async_eval, ThinkLLM, EvalLLM
 from .common import ExecutionBudget, UnifiedLogger, ExecutionMode, UnifiedTokenUsage, BudgetManager, convert_legacy_constraints
-try:
-    from ..thinkon_core import S, SolveResult, SolveStatus, ThinkLLM, EvalLLM, TokenUsage
-except ImportError:
-    # 当作为顶层模块运行时的回退导入
-    import sys
-    import os
-    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-    from thinkon_core import S, SolveResult, SolveStatus, ThinkLLM, EvalLLM, TokenUsage
+from .types import S, SolveResult, SolveStatus, TokenUsage
 
 
 class SyncAsyncAdapter:
@@ -138,24 +131,13 @@ def enhanced_solve(
         # 创建统一组件
         unified_logger = UnifiedLogger(logger, ExecutionMode.ASYNC) if logger else UnifiedLogger()
         unified_token_usage = UnifiedTokenUsage()
-        unified_token_usage.set_async_mode()
 
         # 如果传入了token_usage，合并初始状态
         if token_usage:
-            await unified_token_usage.merge_async(token_usage)
-
-        # 创建执行上下文
-        context = AsyncExecutionContext(
-            think_llm=async_think,
-            eval_llm=async_eval,
-            budget_manager=BudgetManager(budget),
-            token_usage=unified_token_usage,
-            logger=unified_logger,
-            frame_stack=[]
-        )
-
-        # 创建引擎并执行
-        engine = AsyncExecutionEngine(context)
+            unified_token_usage.think_calls = token_usage.think_calls
+            unified_token_usage.eval_calls = token_usage.eval_calls
+            unified_token_usage.think_tokens = token_usage.think_tokens
+            unified_token_usage.eval_tokens = token_usage.eval_tokens
 
         # 如果node已有parent关系，需要特殊处理
         if node.parent:
@@ -169,13 +151,25 @@ def enhanced_solve(
 
             # 从根节点开始恢复
             root_goal = ancestors[0].goal
-            result = await engine.solve_async(root_goal, budget)
+            result = await solve_async(
+                goal=root_goal,
+                think_llm=async_think,
+                eval_llm=async_eval,
+                budget=budget,
+                logger=unified_logger
+            )
 
             # TODO: 实现更复杂的中间状态恢复逻辑
             return result
         else:
             # 简单情况：直接求解
-            return await engine.solve_async(goal, budget)
+            return await solve_async(
+                goal=goal,
+                think_llm=async_think,
+                eval_llm=async_eval,
+                budget=budget,
+                logger=unified_logger
+            )
 
     return _sync_adapter.run_async_in_sync(_async_enhanced_solve())
 
@@ -325,7 +319,10 @@ class AsyncOptimizedLayer:
                 processed_results.append(SolveResult(
                     result=f"批量任务{i}执行异常: {str(result)}",
                     status=SolveStatus.FAILED,
-                    token_usage=UnifiedTokenUsage()
+                    token_usage=TokenUsage(total=0, think_calls=0, eval_calls=0, think_tokens=0, eval_tokens=0),
+                    execution_time=0.0,
+                    max_depth_reached=0,
+                    constraint_triggered=None
                 ))
             else:
                 processed_results.append(result)

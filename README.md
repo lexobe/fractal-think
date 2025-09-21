@@ -1,47 +1,77 @@
-# Fractal Thinkon
+# Fractal Think
 
-分形思考（Fractal Thinkon）框架的 Python 核心库实现，基于 [thinkon.md](thinkon.md) 技术规范 v1.0.0。
+高效的异步分形思考执行框架，支持复杂问题的递归分解和并行处理。
 
 ## 特性
 
-- **最小化递归框架**：通过 Think、Eval 两个算子和状态结构 S 实现完整的递归推理能力
-- **严格规范遵循**：完全按照 thinkon.md 规范实现，确保语义一致性和可预测性
-- **无外部依赖**：纯 Python 标准库实现，易于集成和部署
-- **终止约束机制**：深度、资源、时间三重约束保证系统终止性
-- **优雅降级**：约束触发时返回部分结果而非完全失败
-- **统一日志系统**：支持调试和监控的完整执行追踪
-- **内置示例**：提供规则引擎 Think/Eval 实现用于演示和测试
+- **异步执行引擎**：基于现代异步架构，支持高并发和高效执行
+- **智能计划解析**：支持多种计划格式（[]、1.、步骤:、-）自动识别
+- **预算约束管理**：深度、Token、时间三重约束保证系统终止性
+- **显式状态机**：基于ExecutionFrame的显式栈式状态管理
+- **约束终止**：约束违反时立即终止执行并抛出异常，确保资源边界的严格执行
+- **向后兼容**：提供同步适配器支持原有API
+- **无外部依赖**：纯Python标准库实现，易于集成
+
+## 安装
+
+```bash
+git clone https://github.com/your-repo/fractal-think.git
+cd fractal-think
+```
 
 ## 快速开始
 
-### 基本用法
+### 异步API（推荐）
 
 ```python
-from thinkon_core import start_solve, RuleBasedThink, RuleBasedEval, Constraints
+import asyncio
+from src.fractal_think import solve_async, ExecutionBudget
 
-# 创建算子实例
-think_strategy = RuleBasedThink()
-eval_strategy = RuleBasedEval()
+async def my_think(node, memory=None, tools=None):
+    """异步Think算子"""
+    if len(node.goal) < 20:
+        return {"type": "RETURN", "description": f"完成: {node.goal}", "tokens_used": 50}
+    else:
+        return {
+            "type": "TODO",
+            "description": "[] 步骤1：分析任务\n[] 步骤2：执行计划\n[] 步骤3：总结结果",
+            "tokens_used": 100
+        }
 
-# 执行简单任务
-result = start_solve(
-    goal="写一篇关于AI的技术文章",
-    think_llm=think_strategy,
-    eval_llm=eval_strategy,
-    constraints=Constraints(max_depth=5)
-)
+async def my_eval(node, memory=None):
+    """异步Eval算子"""
+    if len(node.done) > 0:
+        return {"type": "RETURN", "description": f"任务完成: {node.goal}", "tokens_used": 30}
+    else:
+        return {"type": "CALL", "description": f"分析: {node.goal}", "tokens_used": 60}
 
-print(result)
+async def main():
+    result = await solve_async(
+        goal="写一篇关于AI与艺术的短文",
+        think_llm=my_think,
+        eval_llm=my_eval,
+        budget=ExecutionBudget(max_depth=5, max_tokens=2000, max_time=30.0)
+    )
+
+    print(f"状态: {result.status}")
+    print(f"结果: {result.result}")
+    print(f"Token消耗: {result.token_usage.total}")
+
+asyncio.run(main())
 ```
 
-### 运行演示
+### 运行示例
 
 ```bash
-# 运行完整演示程序
-python3 examples/demo.py
+# 运行异步规范示例
+python -m src.fractal_think.examples.norm_async
 
-# 或者作为模块运行
-python3 -m examples.demo
+# 运行简单测试
+python tests/test_simple.py
+
+# 运行pytest测试（需要先安装依赖）
+pip install -r requirements-dev.txt
+pytest tests/
 ```
 
 ## 核心概念
@@ -49,95 +79,138 @@ python3 -m examples.demo
 ### 状态结构 S
 
 ```python
-from thinkon_core import S
+from src.fractal_think import S
 
 # 创建状态节点
 node = S(goal="解决具体问题")
 node.todo = "执行计划文本"
 node.done = ["步骤1结果", "步骤2结果"]
+print(f"当前层级: {node.level}")
 ```
 
-### 算子接口
+### 异步算子接口
 
-**Think 算子**：决定计划制定或直接返回
+**AsyncThinkLLM**：决定计划制定或直接返回
 ```python
-class CustomThink:
-    def __call__(self, node, memory=None, tools=None):
-        return {
-            "type": "TODO",  # 或 "RETURN"
-            "description": "自然语言计划或结果",
-            "tokens_used": 10  # 可选
-        }
+async def my_think(node, memory=None, tools=None):
+    """异步Think算子"""
+    return {
+        "type": "TODO",  # 或 "RETURN"
+        "description": "自然语言计划或结果",
+        "tokens_used": 10  # 可选
+    }
 ```
 
-**Eval 算子**：基于状态决定子任务调用或收束
+**AsyncEvalLLM**：基于状态决定子任务调用或收束
 ```python
-class CustomEval:
-    def __call__(self, node, memory=None):
-        return {
-            "type": "CALL",  # 或 "RETURN"
-            "description": "子目标描述或最终结果",
-            "tokens_used": 5   # 可选
-        }
+async def my_eval(node, memory=None):
+    """异步Eval算子"""
+    return {
+        "type": "CALL",  # 或 "RETURN"
+        "description": "子目标描述或最终结果",
+        "tokens_used": 5   # 可选
+    }
 ```
 
-### 约束配置
+### 预算约束
 
 ```python
-from thinkon_core import Constraints
+from src.fractal_think import ExecutionBudget
 
-constraints = Constraints(
-    max_depth=10,      # 最大递归深度（根节点level=0，触发条件：node.level >= max_depth）
-    max_tokens=1000,   # 最大token消耗（全局累计，包括所有递归调用）
-    max_time=60.0      # 最大执行时间（秒，从start_solve开始计时）
+budget = ExecutionBudget(
+    max_depth=10,      # 最大递归深度
+    max_tokens=1000,   # 最大token消耗
+    max_time=60.0      # 最大执行时间（秒）
 )
 ```
 
+
 ## 架构原理
 
-框架实现了规范中定义的核心控制流：
+基于异步状态机的分形执行引擎：
 
-1. **Think阶段**：决定制定计划（TODO）或直接返回结果（RETURN）
-2. **Plan_made**：如果Think返回计划，写入 `S.todo`
-3. **首启阶段**：Eval基于当前状态决定首个子任务
-4. **While循环**：处理连续的子任务调用
-5. **强不变式**：每个子任务结果必须先入档到 `S.done`
-6. **Return收束**：Eval决定任务完成并返回最终结果
+1. **异步执行引擎**：`AsyncExecutionEngine` 管理执行状态机主循环
+2. **ExecutionFrame栈**：显式栈管理，每个Frame对应一个S节点的完整执行
+3. **状态转换**：THINK → PLANNING → FIRST_EVAL → EVAL → RETURNING/FAILED
+4. **智能计划解析**：自动识别多种计划格式并创建子任务
+5. **预算管理**：`BudgetManager` 实时检查深度、Token、时间约束
+6. **Token追踪**：`UnifiedTokenUsage` 统计Think/Eval调用和消耗
 
 详细技术规范请参考 [thinkon.md](thinkon.md)。
 
-## 文件结构
+## 项目结构
 
 ```
 fractal-think/
-├── thinkon_core.py      # 核心库实现
-├── thinkon_core_old.py  # 旧版本实现（保留）
-├── examples/
-│   ├── demo.py          # 演示脚本
-│   └── __init__.py
-├── thinkon.md           # 技术规范文档
-└── README.md            # 本文件
+├── src/fractal_think/          # 核心包
+│   ├── __init__.py            # 主要API导出
+│   ├── engine.py              # 异步执行引擎
+│   ├── types.py               # 核心数据结构
+│   ├── frame.py               # 执行帧管理
+│   ├── common.py              # 预算和工具组件
+│   ├── interfaces.py          # 算子协议定义
+│   ├── sync_adapter.py        # 同步兼容层(仅向后兼容)
+│   └── examples/              # 示例模块
+│       ├── __init__.py
+│       ├── specification_operators.py  # 规范版算子
+│       ├── mock_operators.py  # 测试用Mock算子
+│       └── norm_async.py      # 异步规范示例
+├── tests/
+│   ├── __init__.py
+│   ├── test_async_core.py     # 核心功能测试
+│   └── test_simple.py         # 简单功能测试
+├── thinkon.md                 # 技术规范文档
+└── README.md                  # 本文件
 ```
 
-## 开发指南
+## API参考
 
-### 自定义算子
+### 主要函数
 
-继承协议或直接实现 `__call__` 方法：
+#### `solve_async()` - 异步求解
 
 ```python
-from thinkon_core import ThinkLLM, EvalLLM
+async def solve_async(
+    goal: str,
+    think_llm: Union[AsyncThinkLLM, ThinkLLM],
+    eval_llm: Union[AsyncEvalLLM, EvalLLM],
+    budget: Optional[ExecutionBudget] = None,
+    logger: Optional[UnifiedLogger] = None,
+    memory: Any = None,
+    tools: Any = None
+) -> SolveResult
+```
 
-class MyThink:
-    def __call__(self, node, memory=None, tools=None):
-        # 自定义逻辑
+### 核心数据结构
+
+#### `SolveResult`
+
+```python
+@dataclass
+class SolveResult:
+    status: SolveStatus           # COMPLETED/FAILED
+    result: str                   # 最终结果
+    token_usage: TokenUsage       # Token消耗统计
+    execution_time: float         # 执行时间
+    max_depth_reached: int        # 最大深度
+    constraint_triggered: Optional[str] = None  # 触发的约束（兼容字段，约束违反时会抛出异常）
+```
+
+### 自定义异步算子
+
+```python
+from src.fractal_think import AsyncThinkLLM, AsyncEvalLLM
+
+class MyAsyncThink:
+    async def __call__(self, node, memory=None, tools=None):
+        # 异步自定义逻辑
         if "简单" in node.goal:
             return {"type": "RETURN", "description": "直接完成"}
         else:
-            return {"type": "TODO", "description": "制定详细计划"}
+            return {"type": "TODO", "description": "[] 分析\n[] 执行\n[] 总结"}
 
-class MyEval:
-    def __call__(self, node, memory=None):
+class MyAsyncEval:
+    async def __call__(self, node, memory=None):
         # 基于 node.todo 和 node.done 决策
         if len(node.done) >= 3:
             return {"type": "RETURN", "description": "任务完成"}
@@ -145,242 +218,146 @@ class MyEval:
             return {"type": "CALL", "description": f"执行步骤{len(node.done)+1}"}
 ```
 
-### 错误处理
+### 智能计划解析
 
-框架提供完整的错误处理和约束检查：
+框架支持多种计划格式的自动识别：
 
 ```python
-from thinkon_core import DepthLimitExceeded, ResourceLimitExceeded, TimeLimitExceeded
-
-try:
-    result = start_solve(goal, think_llm, eval_llm, constraints)
-except (DepthLimitExceeded, ResourceLimitExceeded, TimeLimitExceeded) as e:
-    print(f"约束触发，优雅降级：{e}")
+# 支持的计划格式
+plan_formats = """
+[] 任务1                    # 规范格式
+[] 任务2
+1. 步骤一                   # 数字格式
+2. 步骤二
+- 项目A                    # 列表格式
+- 项目B
+步骤1：分析                 # 步骤格式
+步骤2：执行
+"""
 ```
 
-### JSON序列化
-
-状态结构支持完整的序列化：
+### 执行状态监控
 
 ```python
-# 序列化
-state_dict = node.to_dict()
+import asyncio
+from src.fractal_think import solve_async, ExecutionBudget, SolveStatus
+from src.fractal_think.types import MaxDepthExceeded, ResourceExhausted, ExecutionTimeout, ConstraintViolationError
 
-# 反序列化
-restored_node = S.from_dict(state_dict, parent=parent_node)
+async def main():
+    try:
+        result = await solve_async(goal, think_llm, eval_llm, budget)
+
+        # 状态检查
+        if result.status == SolveStatus.COMPLETED:
+            print(f"✅ 任务完成: {result.result}")
+        else:
+            print(f"❌ 执行失败: {result.result}")
+
+    except MaxDepthExceeded as e:
+        print(f"🚫 深度约束违反: {e}")
+    except ResourceExhausted as e:
+        print(f"🚫 资源约束违反: {e}")
+    except ExecutionTimeout as e:
+        print(f"🚫 时间约束违反: {e}")
+    except ConstraintViolationError as e:
+        print(f"🚫 约束违反: {e}")
+        return  # 约束违反时无结果统计
+
+    # 性能统计（仅在成功执行后）
+    print(f"📊 执行统计:")
+    print(f"  - 时间: {result.execution_time:.2f}s")
+    print(f"  - 深度: {result.max_depth_reached}")
+    print(f"  - Token: {result.token_usage.total}")
+    print(f"  - Think调用: {result.token_usage.think_calls}")
+    print(f"  - Eval调用: {result.token_usage.eval_calls}")
 ```
 
-## API 参考
-
-### solve vs solve_with_meta
-
-框架提供两个核心API满足不同需求：
-
-#### `solve()` - 向后兼容API
-
-完全兼容 thinkon.md 规范 2.1 节，返回自然语言字符串：
+### 测试和开发
 
 ```python
-from thinkon_core import solve, S
-
-# 创建状态节点
-node = S(goal="解决具体问题")
-
-# 规范兼容的调用方式
-result = solve(
-    node=node,
-    think_llm=my_think_strategy,
-    eval_llm=my_eval_strategy,
-    constraints=Constraints(max_depth=5),
-    logger=my_logger
+# 使用规范版算子进行开发
+from src.fractal_think.examples.specification_operators import (
+    SpecificationAIArtThink, SpecificationAIArtEval
 )
 
-print(f"结果: {result}")  # 纯字符串结果
+async def test_specification_example():
+    """测试规范示例"""
+    think_llm = SpecificationAIArtThink(verbose=True)
+    eval_llm = SpecificationAIArtEval(verbose=True)
+
+    result = await solve_async(
+        goal='写一篇"AI与艺术"的短文',
+        think_llm=think_llm,
+        eval_llm=eval_llm,
+        budget=ExecutionBudget(max_depth=3, max_tokens=1000)
+    )
+
+    assert result.status == SolveStatus.COMPLETED
+    assert "AI与艺术" in result.result
+    return result
+
+# 运行测试
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(test_specification_example())
 ```
 
-**适用场景**：
-- 现有代码迁移
-- 只需要结果文本
-- 严格遵循 thinkon.md 规范
-- 与其他基于规范的实现集成
+## 开发
 
-#### `solve_with_meta()` - 增强API
+### 安装开发依赖
 
-返回完整的 `SolveResult` 对象，包含执行元信息：
-
-```python
-from thinkon_core import solve_with_meta, S
-
-node = S(goal="解决具体问题")
-
-result = solve_with_meta(
-    node=node,
-    think_llm=my_think_strategy,
-    eval_llm=my_eval_strategy,
-    constraints=Constraints(max_depth=5),
-    logger=my_logger
-)
-
-print(f"结果: {result.result}")
-print(f"状态: {result.status.value}")
-print(f"Token消耗: {result.token_usage.total}")
-print(f"执行时间: {result.execution_time:.2f}s")
-print(f"最大深度: {result.max_depth_reached}")
-
-# 降级情况的详细信息
-if result.is_degraded:
-    print(f"约束触发: {result.constraint_triggered}")
-    print(f"失败路径: {' -> '.join(result.failure_path)}")
-    print(f"失败层级: {result.failure_level}")
-    print(f"部分结果: {result.partial_results}")
+```bash
+pip install -r requirements-dev.txt
 ```
 
-**适用场景**：
-- 需要执行统计信息
-- 错误诊断和调试
-- 性能监控
-- 优雅降级处理
-- 复杂应用集成
+### 运行测试
 
-### SolveResult 详解
+> **⚠️ 重要提醒**: pytest并未预装，使用前必须先安装开发依赖！
 
-```python
-@dataclass
-class SolveResult:
-    status: SolveStatus           # 执行状态（COMPLETED/DEGRADED/FAILED）
-    result: str                   # 最终结果描述
-    token_usage: TokenUsage       # Token消耗统计
-    execution_time: float         # 执行时间（秒）
-    max_depth_reached: int        # 达到的最大递归深度
-    constraint_triggered: str     # 触发的约束类型（如有）
-    partial_results: List[str]    # 部分结果列表
-    # 降级上下文信息
-    failure_path: List[str]       # 失败路径（根到触发节点的目标序列）
-    failure_level: int            # 触发约束的具体层级
-    failure_node_goal: str        # 触发约束的节点目标
-    failure_node_done: List[str]  # 触发约束时该节点已完成的步骤
+**步骤1：安装开发依赖**
+```bash
+pip install -r requirements-dev.txt
 ```
 
-### 状态语义
+**步骤2：选择测试方式**
+```bash
+# 方式A：使用pytest运行所有测试
+pytest tests/
 
-框架采用纯控制流状态，不判断业务成功与否：
+# 方式B：运行特定测试文件
+pytest tests/test_simple.py
 
-- **COMPLETED**: 控制流正常走到终点（Think直接返回或Eval收束）
-- **DEGRADED**: 约束触发，返回部分结果
-- **FAILED**: 异常失败（代码错误等）
+# 方式C：显示详细输出
+pytest tests/test_simple.py -v -s
 
-### 高级使用示例
-
-```python
-# 监控和调试模式
-result = solve_with_meta(node, think_llm, eval_llm, constraints)
-
-if result.is_completed:
-    print(f"✓ 任务完成: {result.result}")
-elif result.is_degraded:
-    print(f"⚠ 优雅降级: {result.constraint_triggered}")
-    print(f"失败路径: {' -> '.join(result.failure_path)}")
-    print(f"已完成步骤: {len(result.partial_results)}")
-    # 可以基于上下文信息进行重试或恢复
-else:
-    print(f"✗ 执行失败: {result.result}")
-
-# 性能统计
-print(f"Token统计: Think={result.token_usage.think_tokens}, "
-      f"Eval={result.token_usage.eval_tokens}, "
-      f"总计={result.token_usage.total}")
+# 方式D：直接运行测试脚本（无需pytest）
+python tests/test_simple.py
 ```
 
-### 约束参数详解
+### 项目结构说明
+
+- `src/fractal_think/` - 核心异步框架
+- `src/fractal_think/examples/` - 示例和Mock算子
+- `tests/` - 测试套件
+- `requirements-dev.txt` - 开发依赖
+
+## 附录
+
+### 同步适配器（向后兼容）
+
+> **注意**: 同步适配器仅用于向后兼容，新项目强烈推荐使用异步API。
 
 ```python
-# 约束配置的详细语义
-constraints = Constraints(
-    max_depth=10,      # 最大递归深度
-                       # - 根节点level=0，子节点递增
-                       # - 触发条件：node.level >= max_depth
-                       # - 推荐值：3-10，取决于问题复杂度
+from src.fractal_think.sync_adapter import solve_with_async_engine
 
-    max_tokens=1000,   # 最大token消耗
-                       # - 全局累计，包括所有递归调用的token
-                       # - 每次Think/Eval调用后检查
-                       # - 算子可通过"tokens_used"字段报告消耗
-
-    max_time=60.0      # 最大执行时间（秒）
-                       # - 从start_solve调用开始计时
-                       # - 每次约束检查时验证
-                       # - 包括Think/Eval/递归调用的总时间
+# 仅用于兼容旧版同步算子
+result = solve_with_async_engine(
+    goal="任务目标",
+    think_llm=legacy_sync_think,  # 遗留同步算子
+    eval_llm=legacy_sync_eval,    # 遗留同步算子
+    budget=ExecutionBudget()
 )
 ```
-
-### 响应格式规范
-
-使用 TypedDict 可获得更好的类型提示：
-
-```python
-from thinkon_core import ThinkResponse, EvalResponse
-
-class MyThink:
-    def __call__(self, node, memory=None, tools=None) -> ThinkResponse:
-        return {
-            "type": "TODO",
-            "description": "详细计划文本",
-            "tokens_used": 15  # 可选字段，用于资源跟踪
-        }
-
-class MyEval:
-    def __call__(self, node, memory=None) -> EvalResponse:
-        return {
-            "type": "CALL",
-            "description": "子目标描述",
-            "tokens_used": 8   # 可选字段
-        }
-```
-
-### 日志配置
-
-```python
-import logging
-from thinkon_core import setup_logger
-
-# 基础配置
-logger = setup_logger('my_thinkon', logging.DEBUG)
-
-# 避免重复输出
-logger = setup_logger('my_thinkon', logging.INFO, propagate=False)
-
-# 使用自定义logger
-import logging
-custom_logger = logging.getLogger('custom')
-# ... 配置handler等 ...
-
-result = start_solve(
-    goal="任务",
-    think_llm=think_strategy,
-    eval_llm=eval_strategy,
-    logger=custom_logger
-)
-```
-
-### 异常处理策略
-
-```python
-from thinkon_core import (
-    DepthLimitExceeded, ResourceLimitExceeded, TimeLimitExceeded
-)
-
-try:
-    result = start_solve(goal, think_llm, eval_llm, constraints)
-    print(f"任务完成: {result}")
-except DepthLimitExceeded as e:
-    print(f"递归层数过深: {e}")
-except ResourceLimitExceeded as e:
-    print(f"资源消耗超限: {e}")
-except TimeLimitExceeded as e:
-    print(f"执行超时: {e}")
-```
-
-**注意**：在正常使用中，`start_solve` 会自动捕获这些异常并返回优雅降级结果，只有在直接调用 `solve` 函数时才需要手动处理异常。
 
 ## 许可证
 

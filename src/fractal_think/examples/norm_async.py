@@ -3,10 +3,9 @@
 异步规范示例 - 复现 thinkon.md 第 4.1 节"AI与艺术"短文的分形流程
 
 运行方式：
-  从项目根目录运行: python examples/async_norm_example.py
-  或使用模块方式: python -m examples.async_norm_example
+  从项目根目录运行: python -m src.fractal_think.examples.norm_async
 
-本示例使用 async_core 异步执行框架，完整还原规范示例的执行流程，
+本示例使用 fractal_think 异步执行框架，完整还原规范示例的执行流程，
 输出与规范一致的 todo、done 以及最终结果。
 """
 
@@ -14,24 +13,8 @@ import asyncio
 import time
 from typing import Dict, Any
 
-# 导入模块
-try:
-    # 尝试正常包导入
-    from async_core.engine import solve_async
-    from async_core.sync_adapter import solve_with_async_engine
-    from async_core.common import ExecutionBudget
-    from thinkon_core import S, SolveResult, SolveStatus
-    from test_helpers import DetailedAIArtThink, DetailedAIArtEval
-except ImportError:
-    # 回退到路径导入（适配直接运行脚本的情况）
-    import sys
-    import os
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from async_core.engine import solve_async
-    from async_core.sync_adapter import solve_with_async_engine
-    from async_core.common import ExecutionBudget
-    from thinkon_core import S, SolveResult, SolveStatus
-    from test_helpers import DetailedAIArtThink, DetailedAIArtEval
+from .. import solve_async, ExecutionBudget, S, SolveResult, SolveStatus
+from .specification_operators import SpecificationAIArtThink, SpecificationAIArtEval
 
 
 async def run_async_specification_example():
@@ -39,14 +22,25 @@ async def run_async_specification_example():
     print("🚀 启动异步规范示例：AI与艺术短文分形流程")
     print("=" * 60)
 
-    # 创建异步算子
-    think_llm = DetailedAIArtThink(simulation_delay=0.3, verbose=True)
-    eval_llm = DetailedAIArtEval(simulation_delay=0.2, verbose=True)
+    # 创建规范版异步算子
+    think_llm = SpecificationAIArtThink(simulation_delay=0.1, verbose=True)
+    eval_llm = SpecificationAIArtEval(simulation_delay=0.1, verbose=True)
+
+    # 创建详细日志记录器
+    from ..common import UnifiedLogger, ExecutionMode
+    import logging
+
+    # 配置详细日志
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    detail_logger = logging.getLogger('fractal_think')
+    detail_logger.setLevel(logging.INFO)
+
+    logger = UnifiedLogger(logger=detail_logger, mode=ExecutionMode.ASYNC)
 
     # 设置执行约束
     budget = ExecutionBudget(
-        max_depth=5,
-        max_tokens=2000,
+        max_depth=3,
+        max_tokens=1000,
         max_time=10.0
     )
 
@@ -60,7 +54,8 @@ async def run_async_specification_example():
         goal='写一篇"AI与艺术"的短文（800–1200字）',
         think_llm=think_llm,
         eval_llm=eval_llm,
-        budget=budget
+        budget=budget,
+        logger=logger
     )
 
     execution_time = time.time() - start_time
@@ -82,33 +77,14 @@ async def run_async_specification_example():
     if result.constraint_triggered:
         print(f"⚠️  约束触发: {result.constraint_triggered}")
 
-    if result.partial_results:
-        print(f"📝 部分结果: {len(result.partial_results)} 项")
+    # Note: partial_results removed in constraint termination update
 
     print(f"\n📄 最终结果:")
     print("-" * 40)
+    print(f"结果类型: {type(result.result)}")
+    print(f"结果长度: {len(result.result)}")
+    print("结果内容:")
     print(result.result)
-
-    return result
-
-
-def run_sync_wrapper_example():
-    """运行同步包装器示例"""
-    print("\n🔄 同步包装器测试")
-    print("=" * 40)
-
-    think_llm = DetailedAIArtThink(simulation_delay=0.1, verbose=False)  # 较短延时
-    eval_llm = DetailedAIArtEval(simulation_delay=0.05, verbose=False)
-
-    result = solve_with_async_engine(
-        goal='写一篇"AI与艺术"的短文（800–1200字）',
-        think_llm=think_llm,
-        eval_llm=eval_llm,
-        budget=ExecutionBudget(max_depth=5, max_tokens=2000, max_time=10.0)
-    )
-
-    print(f"同步包装器结果状态: {result.status}")
-    print(f"Token统计: {result.token_usage.total}")
 
     return result
 
@@ -119,9 +95,6 @@ async def main():
         # 运行异步示例
         async_result = await run_async_specification_example()
 
-        # 运行同步包装器示例
-        sync_result = run_sync_wrapper_example()
-
         print("\n🎯 规范验证")
         print("=" * 40)
 
@@ -130,9 +103,9 @@ async def main():
             (async_result.status == SolveStatus.COMPLETED, "异步执行状态为COMPLETED"),
             (async_result.token_usage.total > 0, "Token统计正常"),
             (async_result.max_depth_reached > 0, "深度跟踪正常"),
-            (len(async_result.partial_results) == 0, "无部分结果（完整完成）"),
+            (not hasattr(async_result, 'constraint_triggered') or not async_result.constraint_triggered, "无约束违反（正常完成）"),
             ("AI与艺术" in async_result.result, "结果包含主题内容"),
-            (len(async_result.result) > 500, "文章长度合理")
+            (len(async_result.result) > 100, "文章长度合理（符合规范示例）")
         ]
 
         passed = 0

@@ -4,16 +4,20 @@
 
 import asyncio
 from typing import Protocol, runtime_checkable, Any, Dict, Union, Optional
-from abc import ABC, abstractmethod
 
-try:
-    from ..thinkon_core import S, ThinkLLM, EvalLLM
-except ImportError:
-    # 当作为顶层模块运行时的回退导入
-    import sys
-    import os
-    sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-    from thinkon_core import S, ThinkLLM, EvalLLM
+from .types import S
+
+@runtime_checkable
+class ThinkLLM(Protocol):
+    """同步Think算子协议"""
+    def __call__(self, node: S, memory: Any = None, tools: Any = None) -> Dict[str, Any]:
+        ...
+
+@runtime_checkable
+class EvalLLM(Protocol):
+    """同步Eval算子协议"""
+    def __call__(self, node: S, memory: Any = None) -> Dict[str, Any]:
+        ...
 
 
 @runtime_checkable
@@ -93,8 +97,11 @@ class AsyncEvalAdapter(SyncToAsyncAdapter):
 # 工厂函数
 def create_async_think(sync_or_async_think: Union[ThinkLLM, AsyncThinkLLM]) -> AsyncThinkLLM:
     """创建异步Think算子"""
-    # 检查是否已经是真正的异步实现（通过检查方法是否是协程函数）
-    if hasattr(sync_or_async_think, '__call__') and asyncio.iscoroutinefunction(sync_or_async_think.__call__):
+    # 首先检查函数本身是否是协程函数（async def函数）
+    if asyncio.iscoroutinefunction(sync_or_async_think):
+        return sync_or_async_think
+    # 然后检查是否是对象的__call__方法是协程函数
+    elif hasattr(sync_or_async_think, '__call__') and asyncio.iscoroutinefunction(sync_or_async_think.__call__):
         return sync_or_async_think
     else:
         return AsyncThinkAdapter(sync_or_async_think)
@@ -102,8 +109,11 @@ def create_async_think(sync_or_async_think: Union[ThinkLLM, AsyncThinkLLM]) -> A
 
 def create_async_eval(sync_or_async_eval: Union[EvalLLM, AsyncEvalLLM]) -> AsyncEvalLLM:
     """创建异步Eval算子"""
-    # 检查是否已经是真正的异步实现（通过检查方法是否是协程函数）
-    if hasattr(sync_or_async_eval, '__call__') and asyncio.iscoroutinefunction(sync_or_async_eval.__call__):
+    # 首先检查函数本身是否是协程函数（async def函数）
+    if asyncio.iscoroutinefunction(sync_or_async_eval):
+        return sync_or_async_eval
+    # 然后检查是否是对象的__call__方法是协程函数
+    elif hasattr(sync_or_async_eval, '__call__') and asyncio.iscoroutinefunction(sync_or_async_eval.__call__):
         return sync_or_async_eval
     else:
         return AsyncEvalAdapter(sync_or_async_eval)
