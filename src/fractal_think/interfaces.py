@@ -3,9 +3,12 @@
 """
 
 import asyncio
-from typing import Protocol, runtime_checkable, Any, Dict, Union, Optional
+from typing import Protocol, runtime_checkable, Any, Dict, Union, Optional, TYPE_CHECKING
 
 from .types import S
+
+if TYPE_CHECKING:
+    from .execution_node import ExecutionNode
 
 @runtime_checkable
 class ThinkLLM(Protocol):
@@ -117,3 +120,19 @@ def create_async_eval(sync_or_async_eval: Union[EvalLLM, AsyncEvalLLM]) -> Async
         return sync_or_async_eval
     else:
         return AsyncEvalAdapter(sync_or_async_eval)
+
+
+class ExecutionNodeObserver(Protocol):
+    """Observer for execution node lifecycle events."""
+
+    def on_node_created(self, node: "ExecutionNode") -> None:
+        ...
+
+    def on_node_started(self, node: "ExecutionNode") -> None:
+        ...
+
+    def on_node_completed(self, node: "ExecutionNode") -> None:
+        ...
+
+    def on_node_failed(self, node: "ExecutionNode") -> None:
+        ...

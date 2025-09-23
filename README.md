@@ -7,7 +7,8 @@
 - **异步执行引擎**：基于现代异步架构，支持高并发和高效执行
 - **智能计划解析**：支持多种计划格式（[]、1.、步骤:、-）自动识别
 - **预算约束管理**：深度、Token、时间三重约束保证系统终止性
-- **显式状态机**：基于ExecutionFrame的显式栈式状态管理
+- **执行树跟踪**：基于ExecutionNode的显式栈式状态管理
+- **节点观察与恢复**：ExecutionNodeObserver追踪生命周期，ExecutionNode树支持恢复
 - **约束终止**：约束违反时立即终止执行并抛出异常，确保资源边界的严格执行
 - **向后兼容**：提供同步适配器支持原有API
 - **无外部依赖**：纯Python标准库实现，易于集成
@@ -130,13 +131,13 @@ budget = ExecutionBudget(
 基于异步状态机的分形执行引擎：
 
 1. **异步执行引擎**：`AsyncExecutionEngine` 管理执行状态机主循环
-2. **ExecutionFrame栈**：显式栈管理，每个Frame对应一个S节点的完整执行
-3. **状态转换**：THINK → PLANNING → FIRST_EVAL → EVAL → RETURNING/FAILED
+2. **ExecutionNode栈**：显式栈管理，节点与S状态同步并维护执行树
+3. **状态转换**：THINK → PLANNING → FIRST_EVAL → EVAL → RETURNING/FAILED（映射到ExecutionNode.stage）
 4. **智能计划解析**：自动识别多种计划格式并创建子任务
 5. **预算管理**：`BudgetManager` 实时检查深度、Token、时间约束
 6. **Token追踪**：`UnifiedTokenUsage` 统计Think/Eval调用和消耗
 
-详细技术规范请参考 [thinkon.md](thinkon.md)。
+详细技术规范请参考 [thinkon.md](thinkon.md)，ExecutionNode树与恢复流程见下文。
 
 ## 项目结构
 
@@ -146,7 +147,7 @@ fractal-think/
 │   ├── __init__.py            # 主要API导出
 │   ├── engine.py              # 异步执行引擎
 │   ├── types.py               # 核心数据结构
-│   ├── frame.py               # 执行帧管理
+│   ├── execution_node.py      # ExecutionNode树定义
 │   ├── common.py              # 预算和工具组件
 │   ├── interfaces.py          # 算子协议定义
 │   ├── sync_adapter.py        # 同步兼容层(仅向后兼容)
@@ -177,7 +178,9 @@ async def solve_async(
     budget: Optional[ExecutionBudget] = None,
     logger: Optional[UnifiedLogger] = None,
     memory: Any = None,
-    tools: Any = None
+    tools: Any = None,
+    execution_tree: Optional[Union[ExecutionNode, Dict[str, Any]]] = None,
+    observers: Optional[List[ExecutionNodeObserver]] = None,
 ) -> SolveResult
 ```
 
@@ -194,6 +197,63 @@ class SolveResult:
     execution_time: float         # 执行时间
     max_depth_reached: int        # 最大深度
     constraint_triggered: Optional[str] = None  # 触发的约束（兼容字段，约束违反时会抛出异常）
+```
+
+### ExecutionNode 与 NodeStatus
+
+```python
+from src.fractal_think import ExecutionNode, NodeStatus
+
+node = ExecutionNode(
+    node_id="root",
+    goal="示例任务",
+    depth=0,
+    stage="think",
+    node_type="root",
+)
+node.mark_running(stage="think")
+# ...执行逻辑...
+node.mark_completed("返回结果")
+
+assert node.status is NodeStatus.COMPLETED
+payload = node.to_dict()        # 可安全序列化为JSON
+restored = ExecutionNode.from_dict(payload)
+```
+
+`NodeStatus` 仅包含 `RUNNING`、`COMPLETED`、`FAILED` 三种状态。
+
+### ExecutionNodeObserver 与恢复
+
+`solve_async` 支持传入 `observers`，观察者需实现 `ExecutionNodeObserver` 接口的四个方法：
+
+```python
+from src.fractal_think.interfaces import ExecutionNodeObserver
+
+class RecordingObserver(ExecutionNodeObserver):
+    def on_node_created(self, node: ExecutionNode) -> None:
+        ...
+    def on_node_started(self, node: ExecutionNode) -> None:
+        ...
+    def on_node_completed(self, node: ExecutionNode) -> None:
+        ...
+    def on_node_failed(self, node: ExecutionNode) -> None:
+        ...
+```
+
+通过观察者可以捕获根节点并使用 `to_dict()` 序列化执行树，后续可通过 `execution_tree` 参数恢复：
+
+```python
+result = await solve_async(..., observers=[observer])
+snapshot = observer.root.to_dict()
+
+# 失败或中断后恢复执行
+resume_result = await solve_async(
+    goal="示例任务",
+    think_llm=my_think,
+    eval_llm=my_eval,
+    execution_tree=snapshot,
+    observers=[observer]
+)
 ```
 
 ### 自定义异步算子

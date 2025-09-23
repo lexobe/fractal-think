@@ -10,13 +10,20 @@
 
 import asyncio
 import threading
-from typing import Optional, Any, Union, List
+from typing import Optional, Any, Union, List, Dict
 import logging
 
 from .engine import solve_async
-from .interfaces import create_async_think, create_async_eval, ThinkLLM, EvalLLM
+from .interfaces import (
+    create_async_think,
+    create_async_eval,
+    ThinkLLM,
+    EvalLLM,
+    ExecutionNodeObserver,
+)
 from .common import ExecutionBudget, UnifiedLogger, ExecutionMode, UnifiedTokenUsage, BudgetManager, convert_legacy_constraints
 from .types import S, SolveResult, SolveStatus, TokenUsage
+from .execution_node import ExecutionNode
 
 
 class SyncAsyncAdapter:
@@ -74,7 +81,9 @@ def solve_with_async_engine(
     budget: Optional[Union[ExecutionBudget, Any]] = None,
     logger: Optional[logging.Logger] = None,
     memory: Any = None,
-    tools: Any = None
+    tools: Any = None,
+    execution_tree: Optional[Union[ExecutionNode, Dict[str, Any]]] = None,
+    observers: Optional[List[ExecutionNodeObserver]] = None,
 ) -> SolveResult:
     """使用异步引擎的同步solve实现 - 完全向后兼容"""
 
@@ -99,7 +108,9 @@ def solve_with_async_engine(
             budget=converted_budget,
             logger=unified_logger,
             memory=memory,
-            tools=tools
+            tools=tools,
+            execution_tree=execution_tree,
+            observers=observers,
         )
 
     # 在同步上下文中运行异步代码
@@ -112,7 +123,9 @@ def enhanced_solve(
     eval_llm: EvalLLM,
     constraints: Optional[Union[ExecutionBudget, Any]] = None,
     logger: Optional[logging.Logger] = None,
-    token_usage: Optional[TokenUsage] = None
+    token_usage: Optional[TokenUsage] = None,
+    execution_tree: Optional[Union[ExecutionNode, Dict[str, Any]]] = None,
+    observers: Optional[List[ExecutionNodeObserver]] = None,
 ) -> SolveResult:
     """增强的solve函数 - 兼容原_solve_internal签名"""
 
@@ -168,7 +181,9 @@ def enhanced_solve(
                 think_llm=async_think,
                 eval_llm=async_eval,
                 budget=budget,
-                logger=unified_logger
+                logger=unified_logger,
+                execution_tree=execution_tree,
+                observers=observers,
             )
 
     return _sync_adapter.run_async_in_sync(_async_enhanced_solve())
