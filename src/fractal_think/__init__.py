@@ -24,7 +24,7 @@ from .types import (
 )
 from .common import ExecutionBudget, ExecutionMode
 from .interfaces import AsyncThinkLLM, AsyncEvalLLM, ThinkLLM, EvalLLM
-from .frame import ExecutionFrame, FrameState
+from .execution_node import ExecutionNode, NodeStatus
 from . import examples
 
 # 同步适配器（可选）
@@ -48,7 +48,9 @@ __all__ = [
     "SolveStatus",
     "TokenUsage",
     "ExecutionBudget",
-    "ExecutionFrame",
+    "ExecutionNode",
+    "NodeStatus",
+    "ExecutionFrame",  # 兼容别名
 
     # 协议接口
     "AsyncThinkLLM",
@@ -58,7 +60,6 @@ __all__ = [
 
     # 枚举
     "ExecutionMode",
-    "FrameState",
 
     # 示例模块
     "examples",
@@ -73,6 +74,14 @@ __all__ = [
 # 条件导出同步适配器
 if _SYNC_AVAILABLE:
     __all__.append("solve_with_async_engine")
+
+
+def __getattr__(name: str):
+    if name == "ExecutionFrame":
+        from .execution_node import ExecutionFrame as _ExecutionFrame  # type: ignore
+
+        return _ExecutionFrame
+    raise AttributeError(name)
 
 def get_version() -> str:
     """获取版本信息"""
