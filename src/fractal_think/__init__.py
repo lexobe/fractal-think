@@ -25,6 +25,12 @@ from .types import (
 from .common import ExecutionBudget, ExecutionMode
 from .interfaces import AsyncThinkLLM, AsyncEvalLLM, ThinkLLM, EvalLLM
 from .frame import ExecutionFrame, FrameState
+from .frame_stack import (
+    FrameStackEntry,
+    FrameStackProtocolError,
+    frame_stack_to_json,
+)
+from .memory import Memory
 from . import examples
 
 # 同步适配器（可选）
@@ -49,6 +55,9 @@ __all__ = [
     "TokenUsage",
     "ExecutionBudget",
     "ExecutionFrame",
+    "FrameStackEntry",
+    "FrameStackProtocolError",
+    "Memory",
 
     # 协议接口
     "AsyncThinkLLM",

@@ -10,6 +10,12 @@ from enum import Enum
 from .types import S
 
 
+def identify_node_type(node: S) -> str:
+    """根据节点信息推导 nodeType。默认使用 level 表示。"""
+
+    return f"level-{node.level}"
+
+
 class FrameState(Enum):
     """执行帧状态"""
     THINK = "think"                   # Think阶段

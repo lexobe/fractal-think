@@ -11,11 +11,19 @@
 import asyncio
 import uuid
 import time
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Union, Tuple
 from dataclasses import dataclass
 
 from .interfaces import AsyncThinkLLM, AsyncEvalLLM, create_async_think, create_async_eval
-from .frame import ExecutionFrame, FrameState, SubTaskInfo
+from .frame import ExecutionFrame, FrameState, identify_node_type
+from .frame_stack import (
+    FrameStackEntry,
+    FrameStackProtocolError,
+    append_frame_entry,
+    pop_frame_entry,
+    frame_stack_to_json,
+    validate_frame_stack,
+)
 from .common import ExecutionBudget, BudgetManager, UnifiedTokenUsage, UnifiedLogger, ExecutionMode
 from .types import (
     S,
@@ -52,16 +60,105 @@ class AsyncExecutionEngine:
         self.context = context
         self.frame_stack: List[ExecutionFrame] = []
 
+    # ------------------------------------------------------------------
+    # Memory helpers
+    # ------------------------------------------------------------------
+    def _memory_available(self, memory: Any) -> bool:
+        return (
+            memory is not None
+            and hasattr(memory, "recall")
+            and hasattr(memory, "remember")
+        )
+
+    def _build_memory_context(self, frame: ExecutionFrame, stage: str) -> Dict[str, Any]:
+        return {
+            "session_id": self.context.session_id,
+            "node_id": frame.frame_id,
+            "stage": stage,
+            "timestamp": time.time(),
+            # goal 信息仅用于调试追踪，若担心体积可在自定义实现中剔除或压缩
+            "goal": frame.node.goal,
+            "depth": frame.depth,
+        }
+
+    async def _prepare_memory_inputs(
+        self,
+        frame: ExecutionFrame,
+        memory: Any,
+        stage: str,
+        frame_stack: List[FrameStackEntry],
+    ) -> Tuple[str, Optional[Dict[str, Any]]]:
+        if not self._memory_available(memory):
+            return "", None
+
+        context = self._build_memory_context(frame, stage)
+        try:
+            memory_text = await memory.recall(
+                context,
+                frame_stack=frame_stack_to_json(frame_stack),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            self.context.logger.warning(
+                f"记忆读取失败[{stage}] frame={frame.frame_id}: {exc} context={context}",
+                extra={
+                    "frameStack": frame_stack_to_json(frame_stack),
+                    "frameId": frame.frame_id,
+                },
+            )
+            context.setdefault("version", 0)
+            return "", context
+
+        context.setdefault("version", 0)
+        return memory_text or "", context
+
+    async def _remember_if_needed(
+        self,
+        frame: ExecutionFrame,
+        memory: Any,
+        memory_context: Optional[Dict[str, Any]],
+        payload: Any,
+        stage: str,
+        frame_stack: List[FrameStackEntry],
+    ) -> None:
+        if not self._memory_available(memory) or memory_context is None:
+            return
+
+        if payload is None:
+            return
+
+        payload_str = str(payload).strip()
+        if not payload_str:
+            return
+
+        try:
+            await memory.remember(
+                memory_context,
+                payload_str,
+                frame_stack=frame_stack_to_json(frame_stack),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            self.context.logger.error(
+                f"记忆写入失败[{stage}] frame={frame.frame_id}: {exc} context={memory_context}",
+                extra={
+                    "frameStack": frame_stack_to_json(frame_stack),
+                    "frameId": frame.frame_id,
+                },
+            )
+
     async def solve(
         self,
         goal: str,
         think_llm: AsyncThinkLLM,
         eval_llm: AsyncEvalLLM,
         memory: Any = None,
-        tools: Any = None
+        tools: Any = None,
+        frame_stack: Optional[List[FrameStackEntry]] = None,
     ) -> SolveResult:
         """执行异步求解"""
         self.context.start_time = time.time()
+
+        if frame_stack is None:
+            raise FrameStackProtocolError("solve_async 调用必须提供 frameStack")
 
         try:
             # 创建根节点和根帧
@@ -73,8 +170,16 @@ class AsyncExecutionEngine:
             )
             self.frame_stack.append(root_frame)
 
+            engine_stack = frame_stack
+
             # 执行状态机循环
-            result = await self._execute_state_machine(think_llm, eval_llm, memory, tools)
+            result = await self._execute_state_machine(
+                think_llm,
+                eval_llm,
+                memory,
+                tools,
+                engine_stack,
+            )
 
             return self._create_result(result, SolveStatus.COMPLETED)
 
@@ -95,7 +200,8 @@ class AsyncExecutionEngine:
         think_llm: AsyncThinkLLM,
         eval_llm: AsyncEvalLLM,
         memory: Any,
-        tools: Any
+        tools: Any,
+        frame_stack: List[FrameStackEntry],
     ) -> str:
         """执行状态机主循环"""
         max_iterations = 1000  # 防止无限循环
@@ -118,12 +224,30 @@ class AsyncExecutionEngine:
                 0  # 临时token消耗
             )
 
+            # 根据当前帧状态构建堆栈条目
+            current_stage = "think" if current_frame.state == FrameState.THINK else "eval"
+            stack_entry = FrameStackEntry(
+                frame_id=current_frame.frame_id,
+                depth=current_frame.depth,
+                stage=current_stage,
+                node_type=identify_node_type(current_frame.node),
+            )
+            frame_stack_with_entry = append_frame_entry(frame_stack, stack_entry)
+
             # 执行状态转换
             try:
                 new_state = await self._handle_frame_state(
-                    current_frame, think_llm, eval_llm, memory, tools
+                    current_frame,
+                    think_llm,
+                    eval_llm,
+                    memory,
+                    tools,
+                    frame_stack_with_entry,
                 )
                 current_frame.state = new_state
+
+                # 离开当前帧前弹出堆栈条目
+                frame_stack = pop_frame_entry(frame_stack_with_entry, current_frame.frame_id)
 
                 # 处理状态转换
                 if new_state == FrameState.RETURNING:
@@ -155,17 +279,18 @@ class AsyncExecutionEngine:
         think_llm: AsyncThinkLLM,
         eval_llm: AsyncEvalLLM,
         memory: Any,
-        tools: Any
+        tools: Any,
+        frame_stack: List[FrameStackEntry],
     ) -> FrameState:
         """处理帧状态"""
         if frame.state == FrameState.THINK:
-            return await self._handle_think_state(frame, think_llm, memory, tools)
+            return await self._handle_think_state(frame, think_llm, memory, tools, frame_stack)
         elif frame.state == FrameState.PLANNING:
             return await self._handle_planning_state(frame)
         elif frame.state == FrameState.FIRST_EVAL:
-            return await self._handle_eval_state(frame, eval_llm, memory, is_first=True)
+            return await self._handle_eval_state(frame, eval_llm, memory, frame_stack, is_first=True)
         elif frame.state == FrameState.EVAL:
-            return await self._handle_eval_state(frame, eval_llm, memory, is_first=False)
+            return await self._handle_eval_state(frame, eval_llm, memory, frame_stack, is_first=False)
         else:
             return frame.state
 
@@ -174,13 +299,27 @@ class AsyncExecutionEngine:
         frame: ExecutionFrame,
         think_llm: AsyncThinkLLM,
         memory: Any,
-        tools: Any
+        tools: Any,
+        frame_stack: List[FrameStackEntry],
     ) -> FrameState:
         """处理THINK状态"""
         self.context.logger.debug(f"Frame {frame.frame_id}: 执行Think操作")
 
+        memory_text, memory_context = await self._prepare_memory_inputs(
+            frame,
+            memory,
+            stage="think",
+            frame_stack=frame_stack,
+        )
+
         try:
-            think_result = await think_llm(frame.node, memory, tools)
+            think_result = await think_llm(
+                frame.node,
+                memory_text,
+                memory_context,
+                tools,
+                frame_stack=frame_stack_to_json(frame_stack),
+            )
 
             # 检测是否意外返回了未await的协程
             if asyncio.iscoroutine(think_result):
@@ -198,6 +337,16 @@ class AsyncExecutionEngine:
             # 解析Think结果
             action_type = think_result.get("type", "TODO")
             description = think_result.get("description", "")
+            remember_payload = think_result.get("remember") if isinstance(think_result, dict) else None
+
+            await self._remember_if_needed(
+                frame,
+                memory,
+                memory_context,
+                remember_payload,
+                stage="think",
+                frame_stack=frame_stack,
+            )
 
             if action_type == "RETURN":
                 # 直接返回
@@ -216,6 +365,13 @@ class AsyncExecutionEngine:
             # 约束违反异常直接向上抛出，不转换为FAILED状态
             raise
         except Exception as e:
+            self.context.logger.error(
+                "Think操作异常",
+                extra={
+                    "frameStack": frame_stack_to_json(frame_stack),
+                    "frameId": frame.frame_id,
+                },
+            )
             frame.set_failed(f"Think操作失败: {e}")
             return FrameState.FAILED
         finally:
@@ -289,6 +445,7 @@ class AsyncExecutionEngine:
         frame: ExecutionFrame,
         eval_llm: AsyncEvalLLM,
         memory: Any,
+        frame_stack: List[FrameStackEntry],
         is_first: bool = False
     ) -> FrameState:
         """处理EVAL状态"""
@@ -296,8 +453,20 @@ class AsyncExecutionEngine:
             f"Frame {frame.frame_id}: 执行{'首次' if is_first else ''}Eval操作"
         )
 
+        memory_text, memory_context = await self._prepare_memory_inputs(
+            frame,
+            memory,
+            stage="eval",
+            frame_stack=frame_stack,
+        )
+
         try:
-            eval_result = await eval_llm(frame.node, memory)
+            eval_result = await eval_llm(
+                frame.node,
+                memory_text,
+                memory_context,
+                frame_stack=frame_stack_to_json(frame_stack),
+            )
 
             # 检测是否意外返回了未await的协程
             if asyncio.iscoroutine(eval_result):
@@ -315,6 +484,16 @@ class AsyncExecutionEngine:
             # 解析Eval结果
             action_type = eval_result.get("type", "RETURN")
             description = eval_result.get("description", "")
+            remember_payload = eval_result.get("remember") if isinstance(eval_result, dict) else None
+
+            await self._remember_if_needed(
+                frame,
+                memory,
+                memory_context,
+                remember_payload,
+                stage="eval",
+                frame_stack=frame_stack,
+            )
 
             if action_type == "CALL":
                 # 创建子任务帧
@@ -325,6 +504,13 @@ class AsyncExecutionEngine:
                     depth=frame.depth + 1
                 )
                 self.frame_stack.append(child_frame)
+                self.context.logger.info(
+                    "创建子Frame",
+                    extra={
+                        "frameStack": frame_stack_to_json(frame_stack),
+                        "childFrameId": child_frame.frame_id,
+                    },
+                )
                 return FrameState.EVAL  # 父帧保持EVAL状态，等待子帧完成
 
             elif action_type == "RETURN":
@@ -338,6 +524,13 @@ class AsyncExecutionEngine:
             # 约束违反异常直接向上抛出，不转换为FAILED状态
             raise
         except Exception as e:
+            self.context.logger.error(
+                "Eval操作异常",
+                extra={
+                    "frameStack": frame_stack_to_json(frame_stack),
+                    "frameId": frame.frame_id,
+                },
+            )
             frame.set_failed(f"Eval操作失败: {e}")
             return FrameState.FAILED
         finally:
@@ -398,7 +591,8 @@ async def solve_async(
     budget: Optional[ExecutionBudget] = None,
     logger: Optional[UnifiedLogger] = None,
     memory: Any = None,
-    tools: Any = None
+    tools: Any = None,
+    frame_stack: Optional[List[FrameStackEntry]] = None,
 ) -> SolveResult:
     """
     异步求解主入口函数
@@ -411,15 +605,30 @@ async def solve_async(
         logger: 日志器
         memory: 内存上下文
         tools: 工具上下文
+        frame_stack: 现有执行堆栈（只读数组）
 
     Returns:
         SolveResult: 求解结果
+
+    Raises:
+        FrameStackProtocolError: 当未提供 frame_stack 或协议校验失败时抛出
     """
     # 设置默认参数
     if budget is None:
         budget = ExecutionBudget()
     if logger is None:
         logger = UnifiedLogger()
+
+    if memory is not None:
+        missing = [attr for attr in ("recall", "remember") if not hasattr(memory, attr)]
+        if missing:
+            raise TypeError(
+                "memory implementation must expose async recall() and remember() methods"
+            )
+
+    if frame_stack is None:
+        raise FrameStackProtocolError("solve_async 需要提供 frame_stack 参数")
+    validate_frame_stack(frame_stack)
 
     # 转换为异步接口
     async_think = create_async_think(think_llm)
@@ -435,4 +644,4 @@ async def solve_async(
 
     # 创建引擎并执行
     engine = AsyncExecutionEngine(context)
-    return await engine.solve(goal, async_think, async_eval, memory, tools)
+    return await engine.solve(goal, async_think, async_eval, memory, tools, frame_stack)

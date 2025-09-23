@@ -3,20 +3,33 @@
 """
 
 import asyncio
-from typing import Protocol, runtime_checkable, Any, Dict, Union, Optional
+from typing import Protocol, runtime_checkable, Any, Dict, Union, Optional, List
 
 from .types import S
 
 @runtime_checkable
 class ThinkLLM(Protocol):
     """同步Think算子协议"""
-    def __call__(self, node: S, memory: Any = None, tools: Any = None) -> Dict[str, Any]:
+    def __call__(
+        self,
+        node: S,
+        memory_text: str = "",
+        memory_context: Optional[Dict[str, Any]] = None,
+        tools: Any = None,
+        frame_stack: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         ...
 
 @runtime_checkable
 class EvalLLM(Protocol):
     """同步Eval算子协议"""
-    def __call__(self, node: S, memory: Any = None) -> Dict[str, Any]:
+    def __call__(
+        self,
+        node: S,
+        memory_text: str = "",
+        memory_context: Optional[Dict[str, Any]] = None,
+        frame_stack: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         ...
 
 
@@ -24,12 +37,24 @@ class EvalLLM(Protocol):
 class AsyncThinkLLM(Protocol):
     """异步Think算子协议"""
 
-    async def __call__(self, node: S, memory: Any = None, tools: Any = None) -> Dict[str, Any]:
+    async def __call__(
+        self,
+        node: S,
+        memory_text: str = "",
+        memory_context: Optional[Dict[str, Any]] = None,
+        tools: Any = None,
+        frame_stack: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         """
         异步Think调用
 
         Returns:
-            Dict包含: {"type": "TODO"|"RETURN", "description": str, "tokens_used": int}
+            Dict包含: {
+                "type": "TODO"|"RETURN",
+                "description": str,
+                "tokens_used": int,
+                "remember": Optional[str],  # 非空字符串触发记忆写入
+            }
         """
         ...
 
@@ -38,12 +63,23 @@ class AsyncThinkLLM(Protocol):
 class AsyncEvalLLM(Protocol):
     """异步Eval算子协议"""
 
-    async def __call__(self, node: S, memory: Any = None) -> Dict[str, Any]:
+    async def __call__(
+        self,
+        node: S,
+        memory_text: str = "",
+        memory_context: Optional[Dict[str, Any]] = None,
+        frame_stack: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         """
         异步Eval调用
 
         Returns:
-            Dict包含: {"type": "CALL"|"RETURN", "description": str, "tokens_used": int}
+            Dict包含: {
+                "type": "CALL"|"RETURN",
+                "description": str,
+                "tokens_used": int,
+                "remember": Optional[str],  # 非空字符串触发记忆写入
+            }
         """
         ...
 
@@ -54,7 +90,14 @@ class SyncToAsyncAdapter:
     def __init__(self, sync_llm: Union[ThinkLLM, EvalLLM]):
         self.sync_llm = sync_llm
 
-    async def __call__(self, node: S, memory: Any = None, tools: Any = None) -> Dict[str, Any]:
+    async def __call__(
+        self,
+        node: S,
+        memory_text: str = "",
+        memory_context: Optional[Dict[str, Any]] = None,
+        tools: Any = None,
+        frame_stack: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         """将同步调用包装为异步"""
         # 在线程池中执行同步调用，避免阻塞事件循环
         loop = asyncio.get_event_loop()
@@ -62,12 +105,25 @@ class SyncToAsyncAdapter:
             if tools is not None:
                 # Think算子
                 result = await loop.run_in_executor(
-                    None, lambda: self.sync_llm(node, memory, tools)
+                    None,
+                    lambda: self.sync_llm(
+                        node,
+                        memory_text,
+                        memory_context,
+                        tools,
+                        frame_stack,
+                    ),
                 )
             else:
                 # Eval算子
                 result = await loop.run_in_executor(
-                    None, lambda: self.sync_llm(node, memory)
+                    None,
+                    lambda: self.sync_llm(
+                        node,
+                        memory_text,
+                        memory_context,
+                        frame_stack,
+                    ),
                 )
             return result
         else:
@@ -80,8 +136,15 @@ class AsyncThinkAdapter(SyncToAsyncAdapter):
     def __init__(self, sync_think: ThinkLLM):
         super().__init__(sync_think)
 
-    async def __call__(self, node: S, memory: Any = None, tools: Any = None) -> Dict[str, Any]:
-        return await super().__call__(node, memory, tools)
+    async def __call__(
+        self,
+        node: S,
+        memory_text: str = "",
+        memory_context: Optional[Dict[str, Any]] = None,
+        tools: Any = None,
+        frame_stack: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        return await super().__call__(node, memory_text, memory_context, tools, frame_stack)
 
 
 class AsyncEvalAdapter(SyncToAsyncAdapter):
@@ -90,8 +153,14 @@ class AsyncEvalAdapter(SyncToAsyncAdapter):
     def __init__(self, sync_eval: EvalLLM):
         super().__init__(sync_eval)
 
-    async def __call__(self, node: S, memory: Any = None) -> Dict[str, Any]:
-        return await super().__call__(node, memory, None)
+    async def __call__(
+        self,
+        node: S,
+        memory_text: str = "",
+        memory_context: Optional[Dict[str, Any]] = None,
+        frame_stack: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        return await super().__call__(node, memory_text, memory_context, None, frame_stack)
 
 
 # 工厂函数

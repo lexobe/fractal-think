@@ -3,17 +3,34 @@
 """
 
 import asyncio
-import pytest
 
 # 导入在pytest和直接运行时都能工作
 try:
-    from src.fractal_think import solve_async, ExecutionBudget, SolveStatus, S, SolveResult, TokenUsage, ExecutionFrame
+    from src.fractal_think import (
+        solve_async,
+        ExecutionBudget,
+        SolveStatus,
+        S,
+        SolveResult,
+        TokenUsage,
+        ExecutionFrame,
+        Memory,
+    )
     from src.fractal_think.examples.mock_operators import AsyncMockThinkLLM, AsyncMockEvalLLM
 except ImportError:
     import sys
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from src.fractal_think import solve_async, ExecutionBudget, SolveStatus, S, SolveResult, TokenUsage, ExecutionFrame
+    from src.fractal_think import (
+        solve_async,
+        ExecutionBudget,
+        SolveStatus,
+        S,
+        SolveResult,
+        TokenUsage,
+        ExecutionFrame,
+        Memory,
+    )
     from src.fractal_think.examples.mock_operators import AsyncMockThinkLLM, AsyncMockEvalLLM
 
 
@@ -26,17 +43,19 @@ def test_basic_imports():
     assert len(node.done) == 0
 
 
-@pytest.mark.asyncio
-async def test_basic_async_solve():
-    """运行基本异步测试"""
+async def _run_basic_async_solve():
     think_llm = AsyncMockThinkLLM(simulation_delay=0.01, verbose=False)
     eval_llm = AsyncMockEvalLLM(simulation_delay=0.01, verbose=False)
+
+    memory = Memory()
 
     result = await solve_async(
         goal="简单测试任务",
         think_llm=think_llm,
         eval_llm=eval_llm,
-        budget=ExecutionBudget(max_depth=2, max_tokens=500, max_time=5.0)
+        budget=ExecutionBudget(max_depth=2, max_tokens=500, max_time=5.0),
+        memory=memory,
+        frame_stack=[],
     )
 
     assert result.status == SolveStatus.COMPLETED
@@ -44,29 +63,39 @@ async def test_basic_async_solve():
     assert think_llm.call_count > 0
 
 
-@pytest.mark.asyncio
-async def test_specification_example():
-    """测试规范版算子"""
+def test_basic_async_solve():
+    """运行基本异步测试"""
+    asyncio.run(_run_basic_async_solve())
+
+
+async def _run_specification_example():
     try:
         from src.fractal_think.examples.specification_operators import (
-            SpecificationAIArtThink, SpecificationAIArtEval
+            SpecificationAIArtThink,
+            SpecificationAIArtEval,
         )
     except ImportError:
         import sys
         import os
+
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from src.fractal_think.examples.specification_operators import (
-            SpecificationAIArtThink, SpecificationAIArtEval
+            SpecificationAIArtThink,
+            SpecificationAIArtEval,
         )
 
     think_llm = SpecificationAIArtThink(simulation_delay=0.01, verbose=False)
     eval_llm = SpecificationAIArtEval(simulation_delay=0.01, verbose=False)
 
+    memory = Memory()
+
     result = await solve_async(
         goal='写一篇"AI与艺术"的短文',
         think_llm=think_llm,
         eval_llm=eval_llm,
-        budget=ExecutionBudget(max_depth=3, max_tokens=1000, max_time=10.0)
+        budget=ExecutionBudget(max_depth=3, max_tokens=1000, max_time=10.0),
+        memory=memory,
+        frame_stack=[],
     )
 
     assert result.status == SolveStatus.COMPLETED
@@ -77,16 +106,21 @@ async def test_specification_example():
     assert "艺术评论段落已经写完，提供了深入的分析和见解，符合要求。" in result.result  # Exact original text
 
 
+def test_specification_example():
+    """测试规范版算子"""
+    asyncio.run(_run_specification_example())
+
+
 if __name__ == "__main__":
     # 直接运行模式（向后兼容）
     test_basic_imports()
     print("✅ 导入测试通过")
 
     async def run_tests():
-        await test_basic_async_solve()
+        await _run_basic_async_solve()
         print("✅ 基本异步测试通过")
 
-        await test_specification_example()
+        await _run_specification_example()
         print("✅ 规范示例测试通过")
 
     asyncio.run(run_tests())

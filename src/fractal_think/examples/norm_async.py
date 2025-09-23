@@ -55,7 +55,8 @@ async def run_async_specification_example():
         think_llm=think_llm,
         eval_llm=eval_llm,
         budget=budget,
-        logger=logger
+        logger=logger,
+        frame_stack=[],
     )
 
     execution_time = time.time() - start_time

@@ -25,32 +25,55 @@ cd fractal-think
 
 ```python
 import asyncio
-from src.fractal_think import solve_async, ExecutionBudget
+from src.fractal_think import solve_async, ExecutionBudget, Memory
 
-async def my_think(node, memory=None, tools=None):
-    """异步Think算子"""
+
+async def my_think(node, memory_text="", memory_context=None, tools=None, frame_stack=None):
+    """异步Think算子，读取字符串记忆并在需要时写入新记忆。"""
+
     if len(node.goal) < 20:
-        return {"type": "RETURN", "description": f"完成: {node.goal}", "tokens_used": 50}
-    else:
         return {
-            "type": "TODO",
-            "description": "[] 步骤1：分析任务\n[] 步骤2：执行计划\n[] 步骤3：总结结果",
-            "tokens_used": 100
+            "type": "RETURN",
+            "description": f"完成: {node.goal}",
+            "tokens_used": 50,
+            "remember": f"think-done::{node.goal}",
         }
 
-async def my_eval(node, memory=None):
-    """异步Eval算子"""
+    version_hint = memory_context.get("version", 0) if memory_context else 0
+    return {
+        "type": "TODO",
+        "description": "[] 步骤1：分析任务\n[] 步骤2：执行计划\n[] 步骤3：总结结果",
+        "tokens_used": 100,
+        "remember": f"think-plan::{node.goal}::{version_hint}",
+    }
+
+
+async def my_eval(node, memory_text="", memory_context=None, frame_stack=None):
+    """异步Eval算子，根据完成项决定是否收束。"""
     if len(node.done) > 0:
-        return {"type": "RETURN", "description": f"任务完成: {node.goal}", "tokens_used": 30}
-    else:
-        return {"type": "CALL", "description": f"分析: {node.goal}", "tokens_used": 60}
+        return {
+            "type": "RETURN",
+            "description": f"任务完成: {node.goal}",
+            "tokens_used": 30,
+            "remember": f"eval-done::{node.goal}",
+        }
+
+    return {
+        "type": "CALL",
+        "description": f"分析: {node.goal}",
+        "tokens_used": 60,
+        "remember": None,
+    }
+
 
 async def main():
     result = await solve_async(
         goal="写一篇关于AI与艺术的短文",
         think_llm=my_think,
         eval_llm=my_eval,
-        budget=ExecutionBudget(max_depth=5, max_tokens=2000, max_time=30.0)
+        budget=ExecutionBudget(max_depth=5, max_tokens=2000, max_time=30.0),
+        memory=Memory(),
+        frame_stack=[],
     )
 
     print(f"状态: {result.status}")
@@ -92,23 +115,41 @@ print(f"当前层级: {node.level}")
 
 **AsyncThinkLLM**：决定计划制定或直接返回
 ```python
-async def my_think(node, memory=None, tools=None):
+async def my_think(node, memory_text="", memory_context=None, tools=None, frame_stack=None):
     """异步Think算子"""
     return {
         "type": "TODO",  # 或 "RETURN"
         "description": "自然语言计划或结果",
-        "tokens_used": 10  # 可选
+        "tokens_used": 10,  # 可选
+        "remember": None,   # 返回需要记住的字符串，或None
     }
 ```
 
+> 提示：
+> - `memory_text` 可能为空字符串，表示尚无历史记忆；
+> - `memory_context` 恒包含 `node_id` / `stage` / `timestamp` / `version` 四个字段，便于追踪；
+> - `frame_stack` 为只读列表，元素格式 `{"frameId", "depth", "stage", "nodeType"}`；算子可用于记录/调试，但不得修改；
+> - 返回的 `remember` 需为非空字符串或 `None`，引擎仅在有内容时写入；
+> - 同一节点多次 `remember` 会按调用顺序分配递增版本号，上层若需幂等需自行去重。
+
+### 记忆策略说明
+
+- 默认按 `node_id` 聚合 think/eval 记忆，如需分阶段可自定义 `Memory` 实现。 
+- 默认 Memory 会按 `node_id + stage` 分流记忆，避免 Think / Eval 相互污染；自定义实现可扩展策略。 
+- 去重散列的作用域为 `node_id + stage + payload`，可根据业务扩展 `session_id` 等字段。 
+- `memory_context` 中包含的 `goal` 主要用于调试，若关心体积可在自定义引擎中裁剪。 
+- `_recent_hashes` 维护有限大小的 LRU，超出容量后旧哈希被淘汰，同内容再次写入会获得新的版本号。
+- `version` 为全局递增序列（非按节点计数），用于追踪整体写入顺序。
+
 **AsyncEvalLLM**：基于状态决定子任务调用或收束
 ```python
-async def my_eval(node, memory=None):
+async def my_eval(node, memory_text="", memory_context=None):
     """异步Eval算子"""
     return {
         "type": "CALL",  # 或 "RETURN"
         "description": "子目标描述或最终结果",
-        "tokens_used": 5   # 可选
+        "tokens_used": 5,   # 可选
+        "remember": None,
     }
 ```
 
@@ -177,9 +218,12 @@ async def solve_async(
     budget: Optional[ExecutionBudget] = None,
     logger: Optional[UnifiedLogger] = None,
     memory: Any = None,
-    tools: Any = None
+    tools: Any = None,
+    frame_stack: Optional[List[FrameStackEntry]] = None
 ) -> SolveResult
 ```
+
+> `frame_stack` 为只读执行路径数组，元素格式 `{frameId, depth, stage, nodeType}`。调用方应在进入新 Frame 前追加、退出后弹出，禁止改写已有条目；缺失该参数会触发 `FrameStackProtocolError`。
 
 ### 核心数据结构
 
@@ -202,7 +246,7 @@ class SolveResult:
 from src.fractal_think import AsyncThinkLLM, AsyncEvalLLM
 
 class MyAsyncThink:
-    async def __call__(self, node, memory=None, tools=None):
+    async def __call__(self, node, memory_text="", memory_context=None, tools=None, frame_stack=None):
         # 异步自定义逻辑
         if "简单" in node.goal:
             return {"type": "RETURN", "description": "直接完成"}
@@ -210,7 +254,7 @@ class MyAsyncThink:
             return {"type": "TODO", "description": "[] 分析\n[] 执行\n[] 总结"}
 
 class MyAsyncEval:
-    async def __call__(self, node, memory=None):
+    async def __call__(self, node, memory_text="", memory_context=None, frame_stack=None):
         # 基于 node.todo 和 node.done 决策
         if len(node.done) >= 3:
             return {"type": "RETURN", "description": "任务完成"}
@@ -245,7 +289,7 @@ from src.fractal_think.types import MaxDepthExceeded, ResourceExhausted, Executi
 
 async def main():
     try:
-        result = await solve_async(goal, think_llm, eval_llm, budget)
+        result = await solve_async(goal, think_llm, eval_llm, budget, frame_stack=[])
 
         # 状态检查
         if result.status == SolveStatus.COMPLETED:
@@ -289,7 +333,8 @@ async def test_specification_example():
         goal='写一篇"AI与艺术"的短文',
         think_llm=think_llm,
         eval_llm=eval_llm,
-        budget=ExecutionBudget(max_depth=3, max_tokens=1000)
+        budget=ExecutionBudget(max_depth=3, max_tokens=1000),
+        frame_stack=[],
     )
 
     assert result.status == SolveStatus.COMPLETED
@@ -355,7 +400,8 @@ result = solve_with_async_engine(
     goal="任务目标",
     think_llm=legacy_sync_think,  # 遗留同步算子
     eval_llm=legacy_sync_eval,    # 遗留同步算子
-    budget=ExecutionBudget()
+    budget=ExecutionBudget(),
+    frame_stack=[],
 )
 ```
 

@@ -3,7 +3,7 @@
 """
 
 import asyncio
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from ..types import S
 
@@ -16,7 +16,14 @@ class SpecificationAIArtThink:
         self.verbose = verbose
         self.call_count = 0
 
-    async def __call__(self, node: S, memory: Any = None, tools: Any = None) -> Dict[str, Any]:
+    async def __call__(
+        self,
+        node: S,
+        memory_text: str = "",
+        memory_context: Optional[Dict[str, Any]] = None,
+        tools: Any = None,
+        frame_stack: Optional[list] = None,
+    ) -> Dict[str, Any]:
         self.call_count += 1
         await asyncio.sleep(self.simulation_delay)
 
@@ -33,7 +40,8 @@ class SpecificationAIArtThink:
  [] 生成艺术段落
  [] 辅助创作段落
  [] 艺术评论段落""",
-                "tokens_used": 60
+                "tokens_used": 60,
+                "remember": None,
             }
 
         # 第一段：生成艺术段落 - 完全按照thinkon.md section 4.1
@@ -41,7 +49,8 @@ class SpecificationAIArtThink:
             return {
                 "type": "RETURN",
                 "description": "生成艺术段落已经写完，含DALL·E例，并符合要求。",
-                "tokens_used": 45
+                "tokens_used": 45,
+                "remember": None,
             }
 
         # 第二段：辅助创作段落 - 完全按照thinkon.md规范原文
@@ -49,7 +58,8 @@ class SpecificationAIArtThink:
             return {
                 "type": "RETURN",
                 "description": "辅助创作段落已经写完，包含了一个能打动人的事例，符合要求。",
-                "tokens_used": 50
+                "tokens_used": 50,
+                "remember": None,
             }
 
         # 第三段：艺术评论段落 - 完全按照thinkon.md规范原文
@@ -57,7 +67,8 @@ class SpecificationAIArtThink:
             return {
                 "type": "RETURN",
                 "description": "艺术评论段落已经写完，提供了深入的分析和见解，符合要求。",
-                "tokens_used": 55
+                "tokens_used": 55,
+                "remember": None,
             }
 
         # 其他情况：直接完成，不进入递归分支
@@ -65,7 +76,8 @@ class SpecificationAIArtThink:
             return {
                 "type": "RETURN",
                 "description": f"任务完成: {node.goal}",
-                "tokens_used": 25
+                "tokens_used": 25,
+                "remember": None,
             }
 
 
@@ -77,7 +89,13 @@ class SpecificationAIArtEval:
         self.verbose = verbose
         self.call_count = 0
 
-    async def __call__(self, node: S, memory: Any = None) -> Dict[str, Any]:
+    async def __call__(
+        self,
+        node: S,
+        memory_text: str = "",
+        memory_context: Optional[Dict[str, Any]] = None,
+        frame_stack: Optional[list] = None,
+    ) -> Dict[str, Any]:
         self.call_count += 1
         await asyncio.sleep(self.simulation_delay)
 
@@ -100,14 +118,16 @@ class SpecificationAIArtEval:
                 return {
                     "type": "RETURN",
                     "description": final_article,
-                    "tokens_used": 70
+                    "tokens_used": 70,
+                    "remember": None,
                 }
             else:
                 # 还需要更多段落，继续处理下一个子任务
                 return {
                     "type": "CALL",
                     "description": self._get_next_subtask(len(node.done)),
-                    "tokens_used": 30
+                    "tokens_used": 30,
+                    "remember": None,
                 }
 
         # 子任务：直接返回完成
@@ -115,7 +135,8 @@ class SpecificationAIArtEval:
             return {
                 "type": "RETURN",
                 "description": f"子任务完成: {node.goal}",
-                "tokens_used": 20
+                "tokens_used": 20,
+                "remember": None,
             }
 
     def _get_next_subtask(self, completed_count: int) -> str:

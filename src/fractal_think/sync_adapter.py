@@ -17,6 +17,7 @@ from .engine import solve_async
 from .interfaces import create_async_think, create_async_eval, ThinkLLM, EvalLLM
 from .common import ExecutionBudget, UnifiedLogger, ExecutionMode, UnifiedTokenUsage, BudgetManager, convert_legacy_constraints
 from .types import S, SolveResult, SolveStatus, TokenUsage
+from .frame_stack import FrameStackEntry, FrameStackProtocolError
 
 
 class SyncAsyncAdapter:
@@ -74,9 +75,13 @@ def solve_with_async_engine(
     budget: Optional[Union[ExecutionBudget, Any]] = None,
     logger: Optional[logging.Logger] = None,
     memory: Any = None,
-    tools: Any = None
+    tools: Any = None,
+    frame_stack: Optional[List[FrameStackEntry]] = None,
 ) -> SolveResult:
     """使用异步引擎的同步solve实现 - 完全向后兼容"""
+
+    if frame_stack is None:
+        raise FrameStackProtocolError("solve_with_async_engine 需要提供 frame_stack")
 
     async def _async_solve():
         # 兼容性处理：将旧的Constraints转换为ExecutionBudget
@@ -99,7 +104,8 @@ def solve_with_async_engine(
             budget=converted_budget,
             logger=unified_logger,
             memory=memory,
-            tools=tools
+            tools=tools,
+            frame_stack=frame_stack,
         )
 
     # 在同步上下文中运行异步代码
@@ -112,9 +118,13 @@ def enhanced_solve(
     eval_llm: EvalLLM,
     constraints: Optional[Union[ExecutionBudget, Any]] = None,
     logger: Optional[logging.Logger] = None,
-    token_usage: Optional[TokenUsage] = None
+    token_usage: Optional[TokenUsage] = None,
+    frame_stack: Optional[List[FrameStackEntry]] = None,
 ) -> SolveResult:
     """增强的solve函数 - 兼容原_solve_internal签名"""
+
+    if frame_stack is None:
+        raise FrameStackProtocolError("enhanced_solve 需要提供 frame_stack")
 
     # 参数转换和兼容性处理
     if constraints is not None and not isinstance(constraints, ExecutionBudget):
@@ -156,7 +166,8 @@ def enhanced_solve(
                 think_llm=async_think,
                 eval_llm=async_eval,
                 budget=budget,
-                logger=unified_logger
+                logger=unified_logger,
+                frame_stack=frame_stack,
             )
 
             # TODO: 实现更复杂的中间状态恢复逻辑
@@ -168,7 +179,8 @@ def enhanced_solve(
                 think_llm=async_think,
                 eval_llm=async_eval,
                 budget=budget,
-                logger=unified_logger
+                logger=unified_logger,
+                frame_stack=frame_stack,
             )
 
     return _sync_adapter.run_async_in_sync(_async_enhanced_solve())
@@ -183,15 +195,19 @@ class LegacyCompatibilityLayer:
         think_llm: ThinkLLM,
         eval_llm: EvalLLM,
         constraints: Optional[Union[ExecutionBudget, Any]] = None,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
+        frame_stack: Optional[List[FrameStackEntry]] = None,
     ) -> str:
         """原solve函数的兼容实现 - 返回字符串结果"""
+        if frame_stack is None:
+            raise FrameStackProtocolError("LegacyCompatibilityLayer.solve 需要 frame_stack")
         result = solve_with_async_engine(
             goal=goal,
             think_llm=think_llm,
             eval_llm=eval_llm,
             budget=constraints,
-            logger=logger
+            logger=logger,
+            frame_stack=frame_stack,
         )
         return result.result
 
@@ -201,15 +217,19 @@ class LegacyCompatibilityLayer:
         think_llm: ThinkLLM,
         eval_llm: EvalLLM,
         constraints: Optional[Union[ExecutionBudget, Any]] = None,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
+        frame_stack: Optional[List[FrameStackEntry]] = None,
     ) -> SolveResult:
         """原solve_with_meta函数的兼容实现"""
+        if frame_stack is None:
+            raise FrameStackProtocolError("LegacyCompatibilityLayer.solve_with_meta 需要 frame_stack")
         return solve_with_async_engine(
             goal=goal,
             think_llm=think_llm,
             eval_llm=eval_llm,
             budget=constraints,
-            logger=logger
+            logger=logger,
+            frame_stack=frame_stack,
         )
 
     @staticmethod
@@ -220,9 +240,12 @@ class LegacyCompatibilityLayer:
         max_depth: int = 5,
         max_tokens: int = 5000,
         max_time: float = 30.0,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
+        frame_stack: Optional[List[FrameStackEntry]] = None,
     ) -> SolveResult:
         """原start_solve函数的兼容实现"""
+        if frame_stack is None:
+            raise FrameStackProtocolError("LegacyCompatibilityLayer.start_solve 需要 frame_stack")
         budget = ExecutionBudget(
             max_depth=max_depth,
             max_tokens=max_tokens,
@@ -234,7 +257,8 @@ class LegacyCompatibilityLayer:
             think_llm=think_llm,
             eval_llm=eval_llm,
             budget=budget,
-            logger=logger
+            logger=logger,
+            frame_stack=frame_stack,
         )
 
     @staticmethod
@@ -242,14 +266,18 @@ class LegacyCompatibilityLayer:
         goal: str,
         think_llm: ThinkLLM,
         eval_llm: EvalLLM,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
+        frame_stack: Optional[List[FrameStackEntry]] = None,
     ) -> str:
         """原start_solve_simple函数的兼容实现"""
+        if frame_stack is None:
+            raise FrameStackProtocolError("LegacyCompatibilityLayer.start_solve_simple 需要 frame_stack")
         result = LegacyCompatibilityLayer.start_solve(
             goal=goal,
             think_llm=think_llm,
             eval_llm=eval_llm,
-            logger=logger
+            logger=logger,
+            frame_stack=frame_stack,
         )
         return result.result
 
@@ -266,10 +294,12 @@ class AsyncOptimizedLayer:
         logger: Optional[logging.Logger] = None,
         memory: Any = None,
         tools: Any = None,
-        snapshot_callback: Optional[callable] = None,
-        auto_snapshot: bool = False
+        frame_stack: Optional[List[FrameStackEntry]] = None,
     ) -> SolveResult:
-        """异步优化的solve - 支持快照和恢复"""
+        """异步优化的solve"""
+
+        if frame_stack is None:
+            raise FrameStackProtocolError("solve_async_optimized 需要提供 frame_stack")
 
         unified_logger = UnifiedLogger(logger, ExecutionMode.ASYNC) if logger else UnifiedLogger()
 
@@ -280,7 +310,8 @@ class AsyncOptimizedLayer:
             budget=budget,
             logger=unified_logger,
             memory=memory,
-            tools=tools
+            tools=tools,
+            frame_stack=frame_stack,
         )
 
         return result
@@ -292,9 +323,13 @@ class AsyncOptimizedLayer:
         eval_llm: Union[EvalLLM, 'AsyncEvalLLM'],
         budget_per_task: Optional[ExecutionBudget] = None,
         max_concurrent: int = 3,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
+        frame_stack: Optional[List[FrameStackEntry]] = None,
     ) -> List[SolveResult]:
         """批量异步求解 - 并发执行多个任务"""
+
+        if frame_stack is None:
+            raise FrameStackProtocolError("solve_batch_async 需要提供 frame_stack")
 
         semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -305,7 +340,8 @@ class AsyncOptimizedLayer:
                     think_llm=think_llm,
                     eval_llm=eval_llm,
                     budget=budget_per_task,
-                    logger=logger
+                    logger=logger,
+                    frame_stack=frame_stack,
                 )
 
         # 并发执行所有任务
